@@ -5,6 +5,7 @@ import '../data/api/api_exception.dart';
 import '../data/local/pedido_store.dart';
 import '../data/repositories/pedidos_repository.dart';
 import '../models/pedido.dart';
+import '../services/beep_service.dart';
 import '../services/connectivity_service.dart';
 import '../services/device_scanner_service.dart';
 import '../theme/app_colors.dart';
@@ -63,9 +64,11 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
         aviso = null;
         endereco.clear();
       });
+      await BeepService.instance.enderecoOk();
       produtoFocus.requestFocus();
     } else {
       setState(() => aviso = 'Endereço não encontrado no pedido');
+      await BeepService.instance.erro();
       enderecoFocus.requestFocus();
     }
   }
@@ -85,11 +88,13 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
     produto.clear();
     if (item == null) {
       setState(() => aviso = 'Produto não encontrado no pedido');
+      await BeepService.instance.erro();
       return;
     }
     final atual = separados[item.codauxiliar] ?? 0;
     if (atual >= item.qtd) {
       setState(() => aviso = 'Quantidade solicitada já atingida');
+      await BeepService.instance.erro();
       return;
     }
     final novo = {...separados, item.codauxiliar: atual + 1};
@@ -98,6 +103,7 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
       aviso = null;
     });
     await PedidoStore.instance.salvarSeparacao(widget.pedido.id, novo);
+    await BeepService.instance.produtoOk();
     produtoFocus.requestFocus();
   }
 
@@ -206,7 +212,8 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
     final repo = context.read<PedidosRepository>();
     try {
       await repo.finalizar(widget.pedido);
-      if (mounted) Navigator.pop(context);
+      await BeepService.instance.separacaoConcluida();
+      if (mounted) Navigator.pop(context, true);
     } on ApiException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(

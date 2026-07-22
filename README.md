@@ -52,6 +52,10 @@ Login, lista, reserva/download e finalização exigem conexão; a bipagem do ped
 
 `SessionService` e `PedidosRepository` chamam a API (`/auth/login`, `/pedidos`, reservar, finalizar). Com `SIL_API_USE_MOCK=true` voltam aos dados locais.
 
+Na finalização (online), o app chama a API imediatamente; o pedido some da lista porque a API deixa de retorná-lo (no Winthor real seria o `UPDATE` de fim de separação). A bipagem em si fica no SQLite local e funciona offline; só o **fechar** exige rede e envia para a API na hora — não há fila posterior no coletor.
+
+Login: opção **Lembrar-me** (usuário) e **biometria** (credenciais no armazenamento seguro do aparelho).
+
 ## Testes automatizados
 
 ```powershell

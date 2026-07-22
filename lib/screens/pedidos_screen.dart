@@ -54,9 +54,9 @@ class _PedidosScreenState extends State<PedidosScreen> {
     if (comanda == null || !mounted) return;
     try {
       final pedido = await repo.iniciar(selecionado!, comanda);
-      if (mounted) {
-        Navigator.pushNamed(context, '/separacao', arguments: pedido);
-      }
+      if (!mounted) return;
+      await Navigator.pushNamed(context, '/separacao', arguments: pedido);
+      if (mounted) await _recarregar();
     } on ApiException catch (e) {
       if (mounted) _mensagem(e.message);
     }
