@@ -255,8 +255,37 @@ function Start-DeployJob([bool]$dry) {
   if ($chkFirewall.Checked -and -not (Sil-IsAdmin)) {
     $adminHint = "`r`n`r`nObs: sem Administrador o firewall pode falhar (o restante segue)."
   }
+
+  $cfgPreview = Get-FormConfig
+  $probe = Sil-ProbePrerequisites -Cfg $cfgPreview -NeedApk:$true -NeedAdb:([bool]$chkAdb.Checked)
+  $allowDownload = $false
+  if (-not $probe.Ok) {
+    $faltando = $probe.Missing -join ', '
+    $dlMsg = "Faltam pre-requisitos neste computador:`r`n`r`n$faltando`r`n`r`n" +
+      "O instalador pode baixar automaticamente:`r`n" +
+      "- Flutter/Dart (stable)`r`n" +
+      "- JDK 17 (Microsoft)`r`n" +
+      "- Android SDK (plataformas + build-tools + ADB)`r`n`r`n" +
+      "Isso pode usar varios GB e alguns minutos de internet.`r`n`r`n" +
+      "Deseja baixar e instalar agora?"
+    $r = [Windows.Forms.MessageBox]::Show($dlMsg, 'S.I.L. - Pre-requisitos', 'YesNo', 'Question')
+    if ($r -ne 'Yes') {
+      [Windows.Forms.MessageBox]::Show(
+        'Instalacao cancelada. Instale os pre-requisitos manualmente ou confirme o download na proxima tentativa.',
+        'S.I.L.',
+        'OK',
+        'Information'
+      ) | Out-Null
+      return
+    }
+    $allowDownload = $true
+  } elseif ($probe.FlutterBin) {
+    $txtFlutter.Text = $probe.FlutterBin
+  }
+
   $modo = if ($dry) { 'SIMULACAO' } else { 'INSTALACAO REAL' }
-  $msg = "Sera configurado o S.I.L. neste computador.`r`n`r`nCliente: $($txtCliente.Text)`r`nAPI: http://$($txtIp.Text):$($numPort.Value)`r`nModo: $modo$adminHint`r`n`r`nDeseja continuar?"
+  $dlHint = if ($allowDownload) { "`r`n`r`nInclui download de pre-requisitos ausentes." } else { '' }
+  $msg = "Sera configurado o S.I.L. neste computador.`r`n`r`nCliente: $($txtCliente.Text)`r`nAPI: http://$($txtIp.Text):$($numPort.Value)`r`nModo: $modo$dlHint$adminHint`r`n`r`nDeseja continuar?"
   if ([Windows.Forms.MessageBox]::Show($msg, 'S.I.L. - Confirmacao', 'YesNo', 'Question') -ne 'Yes') { return }
 
   Clear-DeployRunspace
@@ -265,6 +294,7 @@ function Start-DeployJob([bool]$dry) {
   Set-UiBusy $true
   $cfg = Get-FormConfig
   $script:LogCursor = 0
+  $script:AllowPrereqDownload = $allowDownload
 
   $sync = [hashtable]::Synchronized(@{
     Logs   = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
@@ -285,7 +315,7 @@ function Start-DeployJob([bool]$dry) {
   $ps.Runspace = $rs
 
   [void]$ps.AddScript({
-    param($EnginePath, $Cfg, $DryRunFlag, $Sync)
+    param($EnginePath, $Cfg, $DryRunFlag, $AllowDl, $Sync)
     $ErrorActionPreference = 'Stop'
     . $EnginePath
     $script:SilLogHandler = {
@@ -297,7 +327,7 @@ function Start-DeployJob([bool]$dry) {
       $Sync.Steps[[string]$Id] = @{ S = [string]$Status; D = [string]$Detail }
     }
     try {
-      $Sync.Result = Sil-RunDeploy -Cfg $Cfg -DoApi $true -DoApk $true -DryRun:$DryRunFlag
+      $Sync.Result = Sil-RunDeploy -Cfg $Cfg -DoApi $true -DoApk $true -DryRun:$DryRunFlag -AllowPrereqDownload:$AllowDl
       $Sync.Done = $true
     } catch {
       $Sync.Error = $_.Exception.Message
@@ -305,13 +335,16 @@ function Start-DeployJob([bool]$dry) {
       [void]$Sync.Logs.Add(@{ M = $_.Exception.Message; L = 'err'; T = (Get-Date) })
       $Sync.Done = $true
     }
-  }).AddArgument($enginePath).AddArgument($cfg).AddArgument($dry).AddArgument($sync)
+  }).AddArgument($enginePath).AddArgument($cfg).AddArgument($dry).AddArgument($allowDownload).AddArgument($sync)
 
   $script:DeployRunspace = $rs
   $script:DeployPs = $ps
   $script:DeployHandle = $ps.BeginInvoke()
   $timer.Start()
   Add-LogLine 'Execucao iniciada em segundo plano...' 'info'
+  if ($allowDownload) {
+    Add-LogLine 'Download de pre-requisitos autorizado. Acompanhe o log (pode demorar).' 'warn'
+  }
 }
 
 function Update-FromSync {
@@ -349,6 +382,7 @@ function Update-FromSync {
     [Windows.Forms.MessageBox]::Show($sync.Error, 'S.I.L. - Erro', 'OK', 'Error') | Out-Null
   } else {
     if ($sync.Result -and $sync.Result.ApkPath) { $script:LastApk = $sync.Result.ApkPath }
+    if ($sync.Result -and $sync.Result.FlutterBin) { $txtFlutter.Text = $sync.Result.FlutterBin }
     $lblStatus.Text = if ($sync.Dry) { 'Simulacao concluida.' } else { 'Instalacao concluida com sucesso.' }
     $lblStatus.ForeColor = [Drawing.Color]::FromArgb(20, 120, 60)
     $body = if ($sync.Dry) {
@@ -491,7 +525,13 @@ $numPort.Width = 80
 $grpConfig.Controls.Add($numPort)
 $y += 32
 New-Lbl 'Flutter/Dart (pasta bin)' 16 $y; $y += 18
-$txtFlutter = New-Txt 16 $y; $y += 32
+$txtFlutter = New-Txt 16 $y 210
+$btnCheckPrereq = New-Object Windows.Forms.Button
+$btnCheckPrereq.Text = 'Verificar'
+$btnCheckPrereq.Location = New-Object Drawing.Point(235, ($y - 2))
+$btnCheckPrereq.Width = 80
+$grpConfig.Controls.Add($btnCheckPrereq)
+$y += 32
 New-Lbl 'Pasta de build (sem espaco)' 16 $y; $y += 18
 $txtBuild = New-Txt 16 $y; $y += 32
 New-Lbl 'Provedor Winthor' 16 $y; $y += 18
@@ -535,6 +575,53 @@ $chkAdb.Text = 'Instalar no coletor (ADB) se conectado'; $chkAdb.Location = New-
 $grpConfig.Controls.Add($chkAdb)
 
 $cmbWinthor.Add_SelectedIndexChanged({ Update-OracleEnabled })
+$btnCheckPrereq.Add_Click({
+  $cfg = Get-FormConfig
+  $probe = Sil-ProbePrerequisites -Cfg $cfg -NeedApk:$true -NeedAdb:([bool]$chkAdb.Checked)
+  if ($probe.FlutterBin) { $txtFlutter.Text = $probe.FlutterBin }
+  if ($probe.Ok) {
+    $det = @(
+      "Flutter: $($probe.FlutterBin)",
+      "JDK: $($probe.JavaHome)",
+      "Android SDK: $($probe.AndroidSdk)",
+      "ADB: $(if ($probe.AdbPath) { $probe.AdbPath } else { '(nao necessario agora)' })"
+    ) -join "`r`n"
+    Add-LogLine 'Pre-requisitos OK.' 'ok'
+    [Windows.Forms.MessageBox]::Show("Tudo certo neste computador.`r`n`r`n$det", 'S.I.L. - Pre-requisitos', 'OK', 'Information') | Out-Null
+    return
+  }
+  $faltando = $probe.Missing -join ', '
+  Add-LogLine "Pre-requisitos ausentes: $faltando" 'warn'
+  $r = [Windows.Forms.MessageBox]::Show(
+    "Faltam: $faltando`r`n`r`nDeseja baixar e instalar agora?`r`n(Flutter + JDK 17 + Android SDK; pode demorar e usar varios GB)",
+    'S.I.L. - Pre-requisitos',
+    'YesNo',
+    'Question'
+  )
+  if ($r -ne 'Yes') { return }
+  try {
+    Set-UiBusy $true
+    $lblStatus.Text = 'Baixando pre-requisitos...'
+    Add-LogLine 'Iniciando download de pre-requisitos (aguarde)...' 'step'
+    [System.Windows.Forms.Application]::DoEvents()
+    $script:SilLogHandler = {
+      param($Message, $Level)
+      Add-LogLine $Message $Level
+      [System.Windows.Forms.Application]::DoEvents()
+    }
+    $null = Sil-EnsurePrerequisites -Cfg $cfg -NeedApk:$true -NeedAdb:([bool]$chkAdb.Checked) -AllowDownload:$true -DryRun:$false
+    $txtFlutter.Text = $cfg.flutterBin
+    Add-LogLine "Flutter atualizado para: $($cfg.flutterBin)" 'ok'
+    [Windows.Forms.MessageBox]::Show("Pre-requisitos instalados.`r`n`r`nFlutter: $($cfg.flutterBin)", 'S.I.L.', 'OK', 'Information') | Out-Null
+  } catch {
+    Add-LogLine $_.Exception.Message 'err'
+    [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'S.I.L. - Erro', 'OK', 'Error') | Out-Null
+  } finally {
+    $script:SilLogHandler = $null
+    Set-UiBusy $false
+    $lblStatus.Text = 'Pronto. Revise os dados e clique em Iniciar instalacao.'
+  }
+})
 $btnDetectIp.Add_Click({
   $ips = @(Sil-GetLanIPv4)
   if ($ips.Count -eq 0) {

@@ -102,7 +102,23 @@ try {
 
   $doApi = -not $SomenteApk
   $doApk = -not $SomenteApi
-  $res = Sil-RunDeploy -Cfg $cfg -DoApi:$doApi -DoApk:$doApk -DryRun:$DryRun
+  $allowDownload = $false
+  $probe = Sil-ProbePrerequisites -Cfg $cfg -NeedApk:$doApk -NeedAdb:([bool]$cfg.instalarNoColetor)
+  if (-not $probe.Ok) {
+    Write-Host ''
+    Write-Host "Pre-requisitos ausentes: $($probe.Missing -join ', ')" -ForegroundColor Yellow
+    Write-Host 'O instalador pode baixar Flutter (stable), JDK 17 e Android SDK automaticamente.' -ForegroundColor DarkGray
+    Write-Host 'Isso pode consumir varios GB e alguns minutos de internet.' -ForegroundColor DarkGray
+    if (Read-YesNo 'Baixar e instalar os pre-requisitos agora' $true) {
+      $allowDownload = $true
+    } else {
+      throw 'Instalacao cancelada: pre-requisitos ausentes e download nao autorizado.'
+    }
+  } elseif ($probe.FlutterBin) {
+    $cfg.flutterBin = $probe.FlutterBin
+  }
+
+  $res = Sil-RunDeploy -Cfg $cfg -DoApi:$doApi -DoApk:$doApk -DryRun:$DryRun -AllowPrereqDownload:$allowDownload
 
   Write-Host ''
   Write-Host 'Concluido.' -ForegroundColor Green

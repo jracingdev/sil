@@ -68,6 +68,413 @@ function Sil-EnsureFlutter([string]$flutterBin) {
   }
 }
 
+function Sil-EnableTls12 {
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  } catch {}
+}
+
+function Sil-DefaultToolsRoot {
+  foreach ($c in @('D:\SIL_tools', 'C:\SIL_tools', (Join-Path $env:LOCALAPPDATA 'SIL_tools'))) {
+    $parent = Split-Path $c -Parent
+    if ($parent -and (Test-Path $parent)) { return $c }
+  }
+  return (Join-Path $env:LOCALAPPDATA 'SIL_tools')
+}
+
+function Sil-FindJavaHome {
+  if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME 'bin\java.exe'))) {
+    return $env:JAVA_HOME
+  }
+  $candidates = @(
+    (Join-Path (Sil-DefaultToolsRoot) 'jdk'),
+    (Join-Path $env:LOCALAPPDATA 'SIL_tools\jdk'),
+    'C:\Program Files\Microsoft\jdk-17*',
+    'C:\Program Files\Eclipse Adoptium\jdk-17*',
+    'C:\Program Files\Java\jdk-17*'
+  )
+  foreach ($pattern in $candidates) {
+    $hits = @(Get-Item $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
+    foreach ($h in $hits) {
+      if (Test-Path (Join-Path $h.FullName 'bin\java.exe')) { return $h.FullName }
+    }
+  }
+  $cmd = Get-Command java -ErrorAction SilentlyContinue
+  if ($cmd) {
+    $bin = Split-Path $cmd.Source -Parent
+    $home = Split-Path $bin -Parent
+    if (Test-Path (Join-Path $home 'bin\java.exe')) { return $home }
+  }
+  return $null
+}
+
+function Sil-FindAndroidSdk {
+  $candidates = @(
+    $env:ANDROID_HOME,
+    $env:ANDROID_SDK_ROOT,
+    (Join-Path $env:LOCALAPPDATA 'Android\Sdk'),
+    (Join-Path $env:USERPROFILE 'AppData\Local\Android\Sdk'),
+    'C:\Android\Sdk',
+    (Join-Path (Sil-DefaultToolsRoot) 'android-sdk')
+  )
+  foreach ($c in $candidates) {
+    if (-not $c) { continue }
+    $pt = Join-Path $c 'platform-tools'
+    $platforms = Join-Path $c 'platforms'
+    if ((Test-Path $pt) -or (Test-Path $platforms)) { return $c }
+  }
+  return $null
+}
+
+function Sil-FindAdb {
+  $cmd = Get-Command adb -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  $sdk = Sil-FindAndroidSdk
+  if ($sdk) {
+    $adb = Join-Path $sdk 'platform-tools\adb.exe'
+    if (Test-Path $adb) { return $adb }
+  }
+  return $null
+}
+
+function Sil-AndroidSdkReady([string]$sdkRoot) {
+  if (-not $sdkRoot) { return $false }
+  $adb = Join-Path $sdkRoot 'platform-tools\adb.exe'
+  $platforms = Join-Path $sdkRoot 'platforms'
+  $buildTools = Join-Path $sdkRoot 'build-tools'
+  return (Test-Path $adb) -and (Test-Path $platforms) -and (Test-Path $buildTools) -and
+    (@(Get-ChildItem $platforms -Directory -ErrorAction SilentlyContinue).Count -gt 0) -and
+    (@(Get-ChildItem $buildTools -Directory -ErrorAction SilentlyContinue).Count -gt 0)
+}
+
+function Sil-ProbePrerequisites {
+  param(
+    [hashtable]$Cfg,
+    [bool]$NeedApk = $true,
+    [bool]$NeedAdb = $false
+  )
+  $flutterBin = Sil-FindFlutterBin $(if ($Cfg) { $Cfg.flutterBin } else { $null })
+  $javaHome = Sil-FindJavaHome
+  $androidSdk = Sil-FindAndroidSdk
+  $adb = Sil-FindAdb
+  $missing = New-Object System.Collections.Generic.List[string]
+
+  if (-not $flutterBin) {
+    $missing.Add('Flutter/Dart SDK')
+  }
+  if ($NeedApk) {
+    if (-not $javaHome) { $missing.Add('JDK 17 (Java)') }
+    if (-not (Sil-AndroidSdkReady $androidSdk)) { $missing.Add('Android SDK (plataformas + build-tools)') }
+  } elseif ($NeedAdb -and -not $adb) {
+    $missing.Add('ADB (Android platform-tools)')
+  }
+
+  return @{
+    Missing     = @($missing)
+    FlutterBin  = $flutterBin
+    JavaHome    = $javaHome
+    AndroidSdk  = $androidSdk
+    AdbPath     = $adb
+    Ok          = ($missing.Count -eq 0)
+  }
+}
+
+function Sil-DownloadFile([string]$Url, [string]$OutFile) {
+  Sil-EnableTls12
+  $dir = Split-Path $OutFile -Parent
+  if ($dir -and -not (Test-Path $dir)) {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  }
+  Sil-Log "Baixando: $Url" 'info'
+  Sil-Log "Destino: $OutFile" 'info'
+  $tmp = "$OutFile.download"
+  try {
+    if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
+      Start-BitsTransfer -Source $Url -Destination $tmp -ErrorAction Stop
+    } else {
+      $wc = New-Object System.Net.WebClient
+      $wc.Headers.Add('User-Agent', 'SIL-Installer/1.0')
+      $wc.DownloadFile($Url, $tmp)
+      $wc.Dispose()
+    }
+    if (Test-Path $OutFile) { Remove-Item -Force $OutFile }
+    Move-Item -Force $tmp $OutFile
+  } catch {
+    if (Test-Path $tmp) { Remove-Item -Force $tmp -ErrorAction SilentlyContinue }
+    # Fallback Invoke-WebRequest
+    try {
+      Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -UserAgent 'SIL-Installer/1.0'
+    } catch {
+      throw "Falha ao baixar $Url : $($_.Exception.Message)"
+    }
+  }
+  if (-not (Test-Path $OutFile)) { throw "Arquivo nao baixado: $OutFile" }
+  $sizeMb = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
+  Sil-Log "Download concluido ($sizeMb MB)" 'ok'
+}
+
+function Sil-ExpandZip([string]$ZipPath, [string]$DestDir) {
+  if (-not (Test-Path $DestDir)) {
+    New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+  }
+  Sil-Log "Extraindo: $ZipPath" 'info'
+  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+  if ($tar) {
+    & tar.exe -xf $ZipPath -C $DestDir
+    if ($LASTEXITCODE -ne 0) { throw "tar falhou ao extrair $ZipPath" }
+  } else {
+    Expand-Archive -Path $ZipPath -DestinationPath $DestDir -Force
+  }
+  Sil-Log 'Extracao concluida' 'ok'
+}
+
+function Sil-GetFlutterStableDownload {
+  Sil-EnableTls12
+  $manifestUrl = 'https://storage.googleapis.com/flutter_infra_release/releases/releases_windows.json'
+  Sil-Log 'Consultando manifesto Flutter (stable)...' 'info'
+  $json = Invoke-RestMethod -Uri $manifestUrl -TimeoutSec 60
+  $hash = $json.current_release.stable
+  $rel = @($json.releases | Where-Object { $_.hash -eq $hash -and $_.channel -eq 'stable' }) | Select-Object -First 1
+  if (-not $rel) {
+    $rel = @($json.releases | Where-Object { $_.channel -eq 'stable' }) | Select-Object -First 1
+  }
+  if (-not $rel) { throw 'Nao foi possivel localizar release stable do Flutter.' }
+  $base = if ($json.base_url -match 'flutter_infra_release') {
+    $json.base_url.TrimEnd('/')
+  } else {
+    'https://storage.googleapis.com/flutter_infra_release/releases'
+  }
+  return @{
+    Version = [string]$rel.version
+    Url     = "$base/$($rel.archive)"
+  }
+}
+
+function Sil-InstallFlutterSdk([string]$toolsRoot, [bool]$dryRun) {
+  $flutterRoot = Join-Path $toolsRoot 'flutter'
+  $bin = Join-Path $flutterRoot 'bin'
+  if ((Test-Path (Join-Path $bin 'flutter.bat')) -or (Test-Path (Join-Path $bin 'dart.bat'))) {
+    Sil-Log "Flutter ja presente em $bin" 'ok'
+    return $bin
+  }
+  $info = Sil-GetFlutterStableDownload
+  Sil-Log "Flutter stable $($info.Version)" 'info'
+  if ($dryRun) {
+    Sil-Log "DryRun: baixaria Flutter de $($info.Url) para $flutterRoot" 'warn'
+    return $bin
+  }
+  $zip = Join-Path $env:TEMP "flutter_windows_$($info.Version).zip"
+  Sil-DownloadFile -Url $info.Url -OutFile $zip
+  if (-not (Test-Path $toolsRoot)) {
+    New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
+  }
+  # zip contem pasta "flutter"
+  if (Test-Path $flutterRoot) {
+    throw "Pasta $flutterRoot ja existe e esta incompleta. Remova e tente de novo."
+  }
+  Sil-ExpandZip -ZipPath $zip -DestDir $toolsRoot
+  Remove-Item -Force $zip -ErrorAction SilentlyContinue
+  if (-not (Test-Path (Join-Path $bin 'flutter.bat'))) {
+    throw "Flutter extraiu, mas flutter.bat nao encontrado em $bin"
+  }
+  Sil-Log "Flutter instalado em $bin" 'ok'
+  return $bin
+}
+
+function Sil-InstallJdk([string]$toolsRoot, [bool]$dryRun) {
+  $jdkRoot = Join-Path $toolsRoot 'jdk'
+  if (Test-Path (Join-Path $jdkRoot 'bin\java.exe')) {
+    Sil-Log "JDK ja presente em $jdkRoot" 'ok'
+    return $jdkRoot
+  }
+  $url = 'https://aka.ms/download-jdk/microsoft-jdk-17-windows-x64.zip'
+  if ($dryRun) {
+    Sil-Log "DryRun: baixaria JDK 17 de $url para $jdkRoot" 'warn'
+    return $jdkRoot
+  }
+  $zip = Join-Path $env:TEMP 'sil-microsoft-jdk-17.zip'
+  Sil-DownloadFile -Url $url -OutFile $zip
+  $extract = Join-Path $env:TEMP 'sil-jdk-extract'
+  if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+  New-Item -ItemType Directory -Force -Path $extract | Out-Null
+  Sil-ExpandZip -ZipPath $zip -DestDir $extract
+  Remove-Item -Force $zip -ErrorAction SilentlyContinue
+  $found = Get-ChildItem $extract -Recurse -Filter 'java.exe' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -eq 'bin' } |
+    Select-Object -First 1
+  if (-not $found) { throw 'JDK baixado, mas java.exe nao encontrado no zip.' }
+  $srcHome = $found.Directory.Parent.FullName
+  if (Test-Path $jdkRoot) { Remove-Item -Recurse -Force $jdkRoot }
+  New-Item -ItemType Directory -Force -Path (Split-Path $jdkRoot -Parent) | Out-Null
+  Move-Item -Path $srcHome -Destination $jdkRoot
+  Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+  Sil-Log "JDK instalado em $jdkRoot" 'ok'
+  return $jdkRoot
+}
+
+function Sil-InstallAndroidSdk([string]$sdkRoot, [bool]$needFullSdk, [bool]$dryRun) {
+  if (-not $sdkRoot) { $sdkRoot = Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
+  if ($dryRun) {
+    Sil-Log "DryRun: instalaria Android SDK em $sdkRoot" 'warn'
+    return $sdkRoot
+  }
+  New-Item -ItemType Directory -Force -Path $sdkRoot | Out-Null
+
+  $adb = Join-Path $sdkRoot 'platform-tools\adb.exe'
+  if (-not (Test-Path $adb)) {
+    $ptZip = Join-Path $env:TEMP 'sil-platform-tools.zip'
+    Sil-DownloadFile -Url 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile $ptZip
+    Sil-ExpandZip -ZipPath $ptZip -DestDir $sdkRoot
+    Remove-Item -Force $ptZip -ErrorAction SilentlyContinue
+    Sil-Log 'Android platform-tools instalado' 'ok'
+  }
+
+  if (-not $needFullSdk) { return $sdkRoot }
+  if (Sil-AndroidSdkReady $sdkRoot) {
+    Sil-Log "Android SDK pronto em $sdkRoot" 'ok'
+    return $sdkRoot
+  }
+
+  $sdkManager = $null
+  $latestBin = Join-Path $sdkRoot 'cmdline-tools\latest\bin\sdkmanager.bat'
+  if (Test-Path $latestBin) {
+    $sdkManager = $latestBin
+  } else {
+    $ctZip = Join-Path $env:TEMP 'sil-cmdline-tools.zip'
+    # Pacote oficial Google (commandlinetools Windows)
+    Sil-DownloadFile -Url 'https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip' -OutFile $ctZip
+    $tmpCt = Join-Path $env:TEMP 'sil-cmdline-extract'
+    if (Test-Path $tmpCt) { Remove-Item -Recurse -Force $tmpCt }
+    New-Item -ItemType Directory -Force -Path $tmpCt | Out-Null
+    Sil-ExpandZip -ZipPath $ctZip -DestDir $tmpCt
+    Remove-Item -Force $ctZip -ErrorAction SilentlyContinue
+    $inner = Join-Path $tmpCt 'cmdline-tools'
+    if (-not (Test-Path $inner)) {
+      $inner = Get-ChildItem $tmpCt -Directory | Select-Object -First 1 -ExpandProperty FullName
+    }
+    $dest = Join-Path $sdkRoot 'cmdline-tools\latest'
+    New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+    if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+    Move-Item -Path $inner -Destination $dest
+    Remove-Item -Recurse -Force $tmpCt -ErrorAction SilentlyContinue
+    $sdkManager = Join-Path $dest 'bin\sdkmanager.bat'
+    if (-not (Test-Path $sdkManager)) { throw "sdkmanager.bat nao encontrado em $dest" }
+    Sil-Log 'Android cmdline-tools instalado' 'ok'
+  }
+
+  Sil-Log 'Instalando componentes Android SDK (pode demorar)...' 'info'
+  $sdkCmd = "`"$sdkManager`" --sdk_root=$sdkRoot platform-tools `"platforms;android-35`" `"platforms;android-34`" `"build-tools;35.0.0`" `"build-tools;34.0.0`""
+  cmd.exe /c $sdkCmd 2>&1 | ForEach-Object { Sil-Log ([string]$_) 'info' }
+
+  # Aceitar licencas
+  $licenseIn = Join-Path $env:TEMP 'sil-sdk-licenses-in.txt'
+  (('y' + "`r`n") * 40) | Set-Content -Path $licenseIn -Encoding ASCII
+  $licOut = Join-Path $env:TEMP 'sil-sdk-licenses-out.txt'
+  cmd.exe /c "`"$sdkManager`" --sdk_root=$sdkRoot --licenses < `"$licenseIn`" > `"$licOut`" 2>&1" | Out-Null
+  Sil-Log 'Licencas Android SDK processadas' 'ok'
+
+  if (-not (Sil-AndroidSdkReady $sdkRoot)) {
+    throw "Android SDK incompleto em $sdkRoot. Verifique rede/proxy e tente de novo."
+  }
+  Sil-Log "Android SDK pronto em $sdkRoot" 'ok'
+  return $sdkRoot
+}
+
+function Sil-ApplyToolEnv([string]$flutterBin, [string]$javaHome, [string]$androidSdk) {
+  if ($flutterBin) { $env:Path = "$flutterBin;" + $env:Path }
+  if ($javaHome) {
+    $env:JAVA_HOME = $javaHome
+    $env:Path = "$(Join-Path $javaHome 'bin');" + $env:Path
+  }
+  if ($androidSdk) {
+    $env:ANDROID_HOME = $androidSdk
+    $env:ANDROID_SDK_ROOT = $androidSdk
+    $pt = Join-Path $androidSdk 'platform-tools'
+    if (Test-Path $pt) { $env:Path = "$pt;" + $env:Path }
+  }
+}
+
+function Sil-EnsurePrerequisites {
+  param(
+    [hashtable]$Cfg,
+    [bool]$NeedApk = $true,
+    [bool]$NeedAdb = $false,
+    [bool]$AllowDownload = $false,
+    [bool]$DryRun = $false
+  )
+
+  $probe = Sil-ProbePrerequisites -Cfg $Cfg -NeedApk:$NeedApk -NeedAdb:$NeedAdb
+  if ($probe.Ok) {
+    if ($probe.FlutterBin) { $Cfg.flutterBin = $probe.FlutterBin }
+    Sil-ApplyToolEnv -flutterBin $Cfg.flutterBin -javaHome $probe.JavaHome -androidSdk $probe.AndroidSdk
+    Sil-Log 'Pre-requisitos ja instalados neste computador.' 'ok'
+    return (Sil-EnsureFlutter $Cfg.flutterBin)
+  }
+
+  $lista = ($probe.Missing -join ', ')
+  Sil-Log "Faltando: $lista" 'warn'
+
+  if (-not $AllowDownload) {
+    throw "Pre-requisitos ausentes ($lista). Rode o instalador e confirme o download, ou instale manualmente."
+  }
+
+  if ($DryRun) {
+    Sil-Log "DryRun: com confirmacao, baixaria: $lista" 'warn'
+  } else {
+    Sil-Log 'Usuario confirmou download automatico dos pre-requisitos.' 'info'
+  }
+
+  $toolsRoot = Sil-DefaultToolsRoot
+  Sil-Log "Pasta de ferramentas: $toolsRoot" 'info'
+
+  if (-not $probe.FlutterBin) {
+    Sil-SetStep 'prereq' 'running' 'Baixando Flutter/Dart'
+    $Cfg.flutterBin = Sil-InstallFlutterSdk -toolsRoot $toolsRoot -dryRun:$DryRun
+  } else {
+    $Cfg.flutterBin = $probe.FlutterBin
+  }
+
+  $javaHome = $probe.JavaHome
+  if ($NeedApk -and -not $javaHome) {
+    Sil-SetStep 'prereq' 'running' 'Baixando JDK 17'
+    $javaHome = Sil-InstallJdk -toolsRoot $toolsRoot -dryRun:$DryRun
+  }
+
+  $androidSdk = $probe.AndroidSdk
+  if (-not $androidSdk) {
+    $androidSdk = Join-Path $env:LOCALAPPDATA 'Android\Sdk'
+  }
+  $needSdk = $NeedApk -or ($NeedAdb -and -not $probe.AdbPath)
+  if ($needSdk -and (($NeedApk -and -not (Sil-AndroidSdkReady $androidSdk)) -or ($NeedAdb -and -not $probe.AdbPath))) {
+    Sil-SetStep 'prereq' 'running' 'Baixando Android SDK'
+    $androidSdk = Sil-InstallAndroidSdk -sdkRoot $androidSdk -needFullSdk:$NeedApk -dryRun:$DryRun
+  }
+
+  if (-not $DryRun) {
+    Sil-ApplyToolEnv -flutterBin $Cfg.flutterBin -javaHome $javaHome -androidSdk $androidSdk
+    if ((Test-Path (Join-Path $Cfg.flutterBin 'flutter.bat')) -and $androidSdk) {
+      & (Join-Path $Cfg.flutterBin 'flutter.bat') config --android-sdk $androidSdk | Out-Null
+    }
+  }
+
+  # Revalidar (em dry-run aceita caminhos previstos)
+  if ($DryRun) {
+    Sil-Log 'DryRun: pre-requisitos seriam instalados; seguindo simulacao.' 'warn'
+    return @{
+      Flutter = $(if ($Cfg.flutterBin) { Join-Path $Cfg.flutterBin 'flutter.bat' } else { $null })
+      Dart    = $(if ($Cfg.flutterBin) { Join-Path $Cfg.flutterBin 'dart.bat' } else { $null })
+    }
+  }
+
+  $probe2 = Sil-ProbePrerequisites -Cfg $Cfg -NeedApk:$NeedApk -NeedAdb:$NeedAdb
+  if (-not $probe2.Ok) {
+    throw "Ainda faltam pre-requisitos apos download: $($probe2.Missing -join ', ')"
+  }
+  $Cfg.flutterBin = $probe2.FlutterBin
+  Sil-ApplyToolEnv -flutterBin $Cfg.flutterBin -javaHome $probe2.JavaHome -androidSdk $probe2.AndroidSdk
+  return (Sil-EnsureFlutter $Cfg.flutterBin)
+}
+
 function Sil-IsAdmin {
   $id = [Security.Principal.WindowsIdentity]::GetCurrent()
   $p = New-Object Security.Principal.WindowsPrincipal($id)
@@ -213,19 +620,13 @@ function Sil-BuildApk([hashtable]$cfg, [hashtable]$tools, [bool]$dryRun) {
 }
 
 function Sil-InstallAdb([string]$apkPath, [bool]$dryRun) {
-  $adb = Get-Command adb -ErrorAction SilentlyContinue
-  if (-not $adb) {
-    $sdk = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
-    if (Test-Path $sdk) {
-      $env:Path = "$(Split-Path $sdk -Parent);" + $env:Path
-      $adb = Get-Command adb -ErrorAction SilentlyContinue
-    }
-  }
-  if (-not $adb) {
+  $adbPath = Sil-FindAdb
+  if (-not $adbPath) {
     Sil-Log 'adb nao encontrado - copie o APK manualmente para o coletor.' 'warn'
     return $false
   }
-  $devices = adb devices | Select-String -Pattern "`tdevice$"
+  $env:Path = "$(Split-Path $adbPath -Parent);" + $env:Path
+  $devices = & $adbPath devices | Select-String -Pattern "`tdevice$"
   if (-not $devices) {
     Sil-Log 'Nenhum coletor conectado no ADB.' 'warn'
     return $false
@@ -233,9 +634,9 @@ function Sil-InstallAdb([string]$apkPath, [bool]$dryRun) {
   $serial = (($devices | Select-Object -First 1).ToString() -split "`t")[0].Trim()
   Sil-Log "Coletor ADB: $serial" 'ok'
   if ($dryRun) { Sil-Log "DryRun: adb install -r $apkPath" 'warn'; return $true }
-  adb -s $serial install -r $apkPath
+  & $adbPath -s $serial install -r $apkPath
   if ($LASTEXITCODE -ne 0) { throw 'adb install falhou' }
-  adb -s $serial shell monkey -p br.com.rhm.rhm_coletor -c android.intent.category.LAUNCHER 1 | Out-Null
+  & $adbPath -s $serial shell monkey -p br.com.rhm.rhm_coletor -c android.intent.category.LAUNCHER 1 | Out-Null
   Sil-Log 'APK instalado e app iniciado' 'ok'
   return $true
 }
@@ -316,7 +717,8 @@ function Sil-RunDeploy {
     [hashtable]$Cfg,
     [bool]$DoApi = $true,
     [bool]$DoApk = $true,
-    [bool]$DryRun = $false
+    [bool]$DryRun = $false,
+    [bool]$AllowPrereqDownload = $false
   )
 
   if (-not $Cfg.apiPublicIp) {
@@ -328,12 +730,15 @@ function Sil-RunDeploy {
   $cfgOut = Join-Path $script:SilScriptDir "cliente-$safe.json"
   $startScript = Join-Path $script:SilScriptDir "Iniciar-API-$safe.ps1"
   $apkPath = $null
-  $result = @{ ConfigPath = $cfgOut; StartScript = $startScript; ApkPath = $null; Ok = $false }
+  $result = @{ ConfigPath = $cfgOut; StartScript = $startScript; ApkPath = $null; FlutterBin = $null; Ok = $false }
 
   try {
-    Sil-SetStep 'prereq' 'running' 'Verificando Flutter/Dart'
+    Sil-SetStep 'prereq' 'running' 'Verificando pre-requisitos'
     Sil-Log 'Pre-requisitos' 'step'
-    $tools = Sil-EnsureFlutter $Cfg.flutterBin
+    $needAdb = [bool]$Cfg.instalarNoColetor
+    $tools = Sil-EnsurePrerequisites -Cfg $Cfg -NeedApk:$DoApk -NeedAdb:$needAdb `
+      -AllowDownload:$AllowPrereqDownload -DryRun:$DryRun
+    $result.FlutterBin = $Cfg.flutterBin
     Sil-Log "Flutter/Dart: $($Cfg.flutterBin)" 'ok'
     Sil-Log "Repo: $($Cfg.repoRoot)" 'ok'
     Sil-Log "API: http://$($Cfg.apiPublicIp):$($Cfg.apiPort) ($($Cfg.winthorProvider))" 'ok'
@@ -420,7 +825,7 @@ function Sil-RunDeploy {
 }
 
 $script:SilDeploySteps = @(
-  @{ Id = 'prereq';   Label = '1. Verificar Flutter / Dart no computador' }
+  @{ Id = 'prereq';   Label = '1. Verificar / baixar Flutter, JDK e Android SDK' }
   @{ Id = 'config';   Label = '2. Salvar configuracao do cliente' }
   @{ Id = 'deps';     Label = '3. Instalar dependencias da API' }
   @{ Id = 'script';   Label = '4. Gerar script de inicializacao da API' }

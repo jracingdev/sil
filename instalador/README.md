@@ -55,7 +55,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## Passos automatizados (checklist)
 
-1. Verificar Flutter / Dart  
+1. Verificar / baixar Flutter, JDK e Android SDK  
 2. Salvar configuracao do cliente  
 3. Instalar dependencias da API  
 4. Gerar script `Iniciar-API-<cliente>.ps1`  
@@ -69,23 +69,21 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## Pre-requisitos: o instalador baixa sozinho?
 
-**Nao.** Hoje o instalador **nao baixa** Flutter, Dart, Android SDK nem ADB.
+**Sim, com confirmacao.** Antes de instalar, o programa verifica:
 
-Ele apenas:
-- localiza o Flutter/Dart no caminho informado (ou em pastas comuns);
-- falha com mensagem clara se nao achar;
-- automatiza API, firewall, APK e (opcional) ADB **se** o ambiente ja existir.
+| Item | Uso |
+|------|-----|
+| Flutter/Dart (stable) | API + APK |
+| JDK 17 | Compilar APK |
+| Android SDK + ADB | Compilar APK / instalar no coletor |
 
-Precisa estar no PC do servidor/build **antes**:
-| Item | Obrigatorio? |
-|------|----------------|
-| Flutter (com Dart) | Sim, para API + APK |
-| Android SDK / licencas | Sim, para gerar APK |
-| ADB | So se marcar "Instalar no coletor" |
-| Git | Opcional (se for clonar) |
-| Oracle client/driver | So quando `oracle` estiver pronto |
+Se algo faltar, aparece um dialogo **Yes/No**. So baixa se o usuario confirmar (pode levar varios GB e minutos).
 
-Se quiser, numa proxima entrega dá para acrescentar download automatico do Flutter SDK.
+Na tela visual ha o botao **Verificar** ao lado do campo Flutter para checar (e opcionalmente baixar) sem iniciar o deploy completo.
+
+Pastas padrao dos downloads:
+- Ferramentas: `D:\SIL_tools` (ou `C:\SIL_tools` / `%LOCALAPPDATA%\SIL_tools`)
+- Android SDK: `%LOCALAPPDATA%\Android\Sdk`
 
 ## Se nao abrir / nao funcionar
 
