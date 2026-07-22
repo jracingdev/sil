@@ -23,4 +23,13 @@ class Operador {
     permissoes: permissoes,
     token: token ?? this.token,
   );
+
+  factory Operador.fromJson(Map<String, Object?> json) => Operador(
+    matricula: json['matricula']! as String,
+    nome: json['nome']! as String,
+    nomeGuerra: json['nomeGuerra']! as String,
+    codfilial: json['codfilial']! as int,
+    permissoes: (json['permissoes']! as List).cast<String>(),
+    token: json['token'] as String?,
+  );
 }

@@ -1,11 +1,22 @@
+import '../../config/api_config.dart';
+import '../api/sil_api_client.dart';
 import '../local/pedido_store.dart';
 import '../mock_data.dart';
 import '../../models/pedido.dart';
 
 class PedidosRepository {
-  const PedidosRepository();
+  const PedidosRepository({this.api});
+
+  final SilApiClient? api;
 
   Future<List<Pedido>> listar() async {
+    if (ApiConfig.useMock || api == null) {
+      return _listarMock();
+    }
+    return api!.listarPedidos();
+  }
+
+  Future<List<Pedido>> _listarMock() async {
     final pedidos = [...pedidosMock];
     pedidos.sort((a, b) {
       final prioridade = transportadora(
@@ -16,14 +27,23 @@ class PedidosRepository {
     return pedidos;
   }
 
-  /// Mock da reserva atômica na API seguido pelo download para SQLite.
+  /// Reserva atômica na API seguido pelo download para SQLite.
   Future<Pedido> iniciar(Pedido pedido, String comanda) async {
-    final reservado = pedido.copyWith(numComanda: comanda);
+    final Pedido reservado;
+    if (ApiConfig.useMock || api == null) {
+      reservado = pedido.copyWith(numComanda: comanda);
+    } else {
+      reservado = await api!.reservarPedido(pedido.id, comanda);
+    }
     await PedidoStore.instance.salvar(reservado);
     return reservado;
   }
 
-  /// Na API real este método executará UPDATE PCPEDC SET DTFINALSEP1 = SYSDATE.
-  Future<void> finalizar(Pedido pedido) =>
-      PedidoStore.instance.remover(pedido.id);
+  /// Na API real: UPDATE PCPEDC SET DTFINALSEP1 = SYSDATE (via backend).
+  Future<void> finalizar(Pedido pedido) async {
+    if (!ApiConfig.useMock && api != null) {
+      await api!.finalizarPedido(pedido.id);
+    }
+    await PedidoStore.instance.remover(pedido.id);
+  }
 }

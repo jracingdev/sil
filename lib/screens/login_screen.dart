@@ -17,17 +17,23 @@ class _LoginScreenState extends State<LoginScreen> {
   final usuario = TextEditingController();
   final senha = TextEditingController();
   String? erro;
+  bool carregando = false;
 
   Future<void> entrar() async {
     if (!context.read<ConnectivityService>().online) {
       setState(() => erro = 'É necessária conexão para entrar.');
       return;
     }
+    setState(() {
+      carregando = true;
+      erro = null;
+    });
     final resultado = await context.read<SessionService>().login(
       usuario.text,
       senha.text,
     );
     if (!mounted) return;
+    setState(() => carregando = false);
     if (resultado != null) {
       setState(() {
         erro = resultado;
@@ -143,7 +149,10 @@ class _LoginScreenState extends State<LoginScreen> {
     ),
     bottomNavigationBar: SafeArea(
       minimum: const EdgeInsets.fromLTRB(24, 8, 24, 16),
-      child: PrimaryButton(label: 'Entrar', onPressed: entrar),
+      child: PrimaryButton(
+        label: carregando ? 'Entrando…' : 'Entrar',
+        onPressed: carregando ? null : entrar,
+      ),
     ),
   );
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/api/api_exception.dart';
 import '../data/mock_data.dart';
 import '../data/repositories/pedidos_repository.dart';
 import '../models/pedido.dart';
@@ -16,13 +17,25 @@ class PedidosScreen extends StatefulWidget {
 }
 
 class _PedidosScreenState extends State<PedidosScreen> {
-  final repo = const PedidosRepository();
   Pedido? selecionado;
-  late Future<List<Pedido>> pedidos;
+  Future<List<Pedido>>? pedidos;
+  bool _carregou = false;
+
+  PedidosRepository get repo => context.read<PedidosRepository>();
+
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_carregou) return;
+    _carregou = true;
     pedidos = repo.listar();
+  }
+
+  Future<void> _recarregar() async {
+    setState(() {
+      selecionado = null;
+      pedidos = repo.listar();
+    });
   }
 
   Future<void> iniciar() async {
@@ -36,8 +49,14 @@ class _PedidosScreenState extends State<PedidosScreen> {
       builder: (_) => _ComandaDialog(pedido: selecionado!),
     );
     if (comanda == null || !mounted) return;
-    final pedido = await repo.iniciar(selecionado!, comanda);
-    if (mounted) Navigator.pushNamed(context, '/separacao', arguments: pedido);
+    try {
+      final pedido = await repo.iniciar(selecionado!, comanda);
+      if (mounted) {
+        Navigator.pushNamed(context, '/separacao', arguments: pedido);
+      }
+    } on ApiException catch (e) {
+      if (mounted) _mensagem(e.message);
+    }
   }
 
   void _mensagem(String texto) => ScaffoldMessenger.of(
@@ -50,32 +69,63 @@ class _PedidosScreenState extends State<PedidosScreen> {
     body: FutureBuilder<List<Pedido>>(
       future: pedidos,
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
+        if (pedidos == null ||
+            snapshot.connectionState != ConnectionState.done) {
           return const Center(child: CircularProgressIndicator());
         }
-        return ListView.separated(
-          padding: const EdgeInsets.all(14),
-          itemCount: snapshot.data!.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 8),
-          itemBuilder: (_, index) {
-            final pedido = snapshot.data![index];
-            final ativo = selecionado?.id == pedido.id;
-            final frete = transportadora(pedido.codFornecFrete);
-            return Card(
-              color: ativo ? AppColors.accentSoft : null,
-              child: ListTile(
-                onTap: () => setState(() => selecionado = pedido),
-                leading: Icon(
-                  ativo ? Icons.radio_button_checked : Icons.radio_button_off,
-                  color: ativo ? AppColors.accentDark : AppColors.mutedLight,
-                ),
-                title: Text('Pedido: ${pedido.id}', style: AppTheme.monoBold),
-                subtitle: Text(
-                  'Transport: ${frete.nome}\nData: ${pedido.dataFormatada}\nCliente: ${pedido.cliente}',
-                ),
+        if (snapshot.hasError) {
+          final erro = snapshot.error is ApiException
+              ? (snapshot.error! as ApiException).message
+              : '${snapshot.error}';
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(erro, textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _recarregar,
+                    child: const Text('Tentar novamente'),
+                  ),
+                ],
               ),
-            );
-          },
+            ),
+          );
+        }
+        final lista = snapshot.data ?? const <Pedido>[];
+        if (lista.isEmpty) {
+          return const Center(child: Text('Nenhum pedido pendente.'));
+        }
+        return RefreshIndicator(
+          onRefresh: _recarregar,
+          child: ListView.separated(
+            padding: const EdgeInsets.all(14),
+            itemCount: lista.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 8),
+            itemBuilder: (_, index) {
+              final pedido = lista[index];
+              final ativo = selecionado?.id == pedido.id;
+              final frete = transportadora(pedido.codFornecFrete);
+              return Card(
+                color: ativo ? AppColors.accentSoft : null,
+                child: ListTile(
+                  onTap: () => setState(() => selecionado = pedido),
+                  leading: Icon(
+                    ativo
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    color: ativo ? AppColors.accentDark : AppColors.mutedLight,
+                  ),
+                  title: Text('Pedido: ${pedido.id}', style: AppTheme.monoBold),
+                  subtitle: Text(
+                    'Transport: ${frete.nome}\nData: ${pedido.dataFormatada}\nCliente: ${pedido.cliente}',
+                  ),
+                ),
+              );
+            },
+          ),
         );
       },
     ),

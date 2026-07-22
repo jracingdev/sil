@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'data/api/sil_api_client.dart';
+import 'data/repositories/pedidos_repository.dart';
 import 'models/pedido.dart';
 import 'screens/conferencia_screen.dart';
 import 'screens/filial_screen.dart';
@@ -17,7 +19,13 @@ class SilApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MultiProvider(
     providers: [
-      ChangeNotifierProvider(create: (_) => SessionService()),
+      Provider(create: (_) => SilApiClient()),
+      ChangeNotifierProvider(
+        create: (ctx) => SessionService(api: ctx.read<SilApiClient>()),
+      ),
+      Provider(
+        create: (ctx) => PedidosRepository(api: ctx.read<SilApiClient>()),
+      ),
       ChangeNotifierProvider(create: (_) => ConnectivityService()),
     ],
     child: MaterialApp(

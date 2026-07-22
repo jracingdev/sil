@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/api/api_exception.dart';
 import '../data/local/pedido_store.dart';
 import '../data/repositories/pedidos_repository.dart';
 import '../models/pedido.dart';
@@ -201,8 +202,18 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
       );
       if (confirmar != true) return;
     }
-    await const PedidosRepository().finalizar(widget.pedido);
-    if (mounted) Navigator.pop(context);
+    if (!mounted) return;
+    final repo = context.read<PedidosRepository>();
+    try {
+      await repo.finalizar(widget.pedido);
+      if (mounted) Navigator.pop(context);
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
   }
 
   void _avisoOffline() => showDialog<void>(

@@ -22,7 +22,24 @@ flutter pub get
 flutter run
 ```
 
-### Credenciais mock
+Por padrão o app aponta para `http://10.0.2.2:8080` (API no host vista pelo emulador Android).
+
+```powershell
+# API na máquina (outro terminal)
+cd api
+dart run bin/server.dart
+
+# Coletor apontando para a API (emulador)
+flutter run
+
+# Dispositivo físico na mesma rede
+flutter run --dart-define=SIL_API_BASE_URL=http://192.168.0.10:8080
+
+# Forçar mocks locais (sem API)
+flutter run --dart-define=SIL_API_USE_MOCK=true
+```
+
+### Credenciais (API mock / app mock)
 
 | Usuário | Senha | Resultado |
 | --- | --- | --- |
@@ -33,7 +50,7 @@ flutter run
 O botão de conexão no drawer alterna o modo online/offline para demonstração.
 Login, lista, reserva/download e finalização exigem conexão; a bipagem do pedido reservado é persistida em SQLite e funciona offline.
 
-Hoje o app ainda usa mocks locais em `lib/data/`. O próximo passo de integração é apontar `SessionService` / `PedidosRepository` para a API (`http://host:8080`).
+`SessionService` e `PedidosRepository` chamam a API (`/auth/login`, `/pedidos`, reservar, finalizar). Com `SIL_API_USE_MOCK=true` voltam aos dados locais.
 
 ## API
 

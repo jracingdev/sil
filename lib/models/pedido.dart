@@ -42,6 +42,9 @@ class ItemPedido {
     a: map['a']! as String,
     qtd: map['qtd']! as int,
   );
+
+  factory ItemPedido.fromJson(Map<String, Object?> json) =>
+      ItemPedido.fromMap(json);
 }
 
 class Pedido {
@@ -75,6 +78,17 @@ class Pedido {
     if (parts.length != 3) return data;
     return '${parts[2]}/${parts[1]}/${parts[0]}';
   }
+
+  factory Pedido.fromJson(Map<String, Object?> json) => Pedido(
+    id: json['id']! as String,
+    data: json['data']! as String,
+    codFornecFrete: json['codFornecFrete']! as int,
+    cliente: json['cliente']! as String,
+    numComanda: json['numComanda'] as String?,
+    itens: (json['itens']! as List)
+        .map((e) => ItemPedido.fromJson(Map<String, Object?>.from(e as Map)))
+        .toList(),
+  );
 }
 
 class TransportadoraInfo {
