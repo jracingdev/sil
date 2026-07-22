@@ -52,6 +52,21 @@ Login, lista, reserva/download e finalização exigem conexão; a bipagem do ped
 
 `SessionService` e `PedidosRepository` chamam a API (`/auth/login`, `/pedidos`, reservar, finalizar). Com `SIL_API_USE_MOCK=true` voltam aos dados locais.
 
+## Testes automatizados
+
+```powershell
+$env:Path = "D:\flutter\bin;" + $env:Path
+
+# App: mocks de prioridade + cliente HTTP + integração contra API real em memória
+flutter test
+
+# API isolada
+cd api
+dart test
+```
+
+Os testes em `test/integration_api_test.dart` sobem a API Shelf em porta efêmera e exercitam o mesmo `SilApiClient` do coletor (login → listar → reservar → finalizar), sem emulador.
+
 ## API
 
 Ver [`api/README.md`](api/README.md) e o contrato [`api/openapi.yaml`](api/openapi.yaml).
