@@ -20,6 +20,15 @@ try {
   Add-Type -AssemblyName System.Drawing
   . "$PSScriptRoot\SilEngine.ps1"
   [System.Windows.Forms.Application]::EnableVisualStyles()
+
+  # Placeholder (cue banner) nos TextBox - .NET Framework nao tem PlaceholderText nativo
+  if (-not ('SilCueBanner' -as [type])) {
+    Add-Type -Namespace Sil -Name CueBanner -MemberDefinition @"
+      [System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+      public static extern System.IntPtr SendMessage(System.IntPtr hWnd, int msg, System.IntPtr wParam, string lParam);
+      public const int EM_SETCUEBANNER = 0x1501;
+"@
+  }
 } catch {
   $_ | Out-File -FilePath $script:UiErrorLog -Encoding utf8
   [System.Windows.Forms.MessageBox]::Show(
@@ -439,6 +448,20 @@ function New-Lbl([string]$text, [int]$x, [int]$y) {
   $l.AutoSize = $true
   $grpConfig.Controls.Add($l)
 }
+function Set-Placeholder([System.Windows.Forms.TextBox]$box, [string]$text) {
+  if ($null -eq $box) { return }
+  $apply = {
+    param($sender, $e)
+    $msg = $text
+    [void][Sil.CueBanner]::SendMessage($sender.Handle, [Sil.CueBanner]::EM_SETCUEBANNER, [IntPtr]1, $msg)
+  }.GetNewClosure()
+  if ($box.IsHandleCreated) {
+    & $apply $box $null
+  } else {
+    $box.Add_HandleCreated($apply)
+  }
+}
+
 function New-Txt([int]$x, [int]$y, [int]$w = 300) {
   $t = New-Object Windows.Forms.TextBox
   $t.Location = New-Object Drawing.Point($x, $y)
@@ -486,6 +509,13 @@ $txtOracleConn = New-Txt 16 $y; $y += 26
 $txtOracleUser = New-Txt 16 $y 140
 $txtOraclePass = New-Txt 165 $y 140
 $txtOraclePass.UseSystemPasswordChar = $true
+Set-Placeholder $txtOracleConn 'ex.: host:1521/ORCL'
+Set-Placeholder $txtOracleUser 'usuario Oracle'
+Set-Placeholder $txtOraclePass 'senha Oracle'
+Set-Placeholder $txtCliente 'ex.: RHM Matriz'
+Set-Placeholder $txtIp 'ex.: 192.168.0.50'
+Set-Placeholder $txtFlutter 'ex.: D:\flutter\bin'
+Set-Placeholder $txtBuild 'ex.: D:\sil_build'
 $y += 36
 
 $chkRelease = New-Object Windows.Forms.CheckBox

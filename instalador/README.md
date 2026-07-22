@@ -67,6 +67,26 @@ Set-ExecutionPolicy -Scope Process Bypass
 10. Instalar no coletor via ADB (opcional)  
 11. Finalizacao  
 
+## Pre-requisitos: o instalador baixa sozinho?
+
+**Nao.** Hoje o instalador **nao baixa** Flutter, Dart, Android SDK nem ADB.
+
+Ele apenas:
+- localiza o Flutter/Dart no caminho informado (ou em pastas comuns);
+- falha com mensagem clara se nao achar;
+- automatiza API, firewall, APK e (opcional) ADB **se** o ambiente ja existir.
+
+Precisa estar no PC do servidor/build **antes**:
+| Item | Obrigatorio? |
+|------|----------------|
+| Flutter (com Dart) | Sim, para API + APK |
+| Android SDK / licencas | Sim, para gerar APK |
+| ADB | So se marcar "Instalar no coletor" |
+| Git | Opcional (se for clonar) |
+| Oracle client/driver | So quando `oracle` estiver pronto |
+
+Se quiser, numa proxima entrega dá para acrescentar download automatico do Flutter SDK.
+
 ## Se nao abrir / nao funcionar
 
 1. Clique direito em `Abrir-Instalador.bat` → **Executar como administrador**
