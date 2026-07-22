@@ -1,0 +1,159 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../data/mock_data.dart';
+import '../data/repositories/pedidos_repository.dart';
+import '../models/pedido.dart';
+import '../services/connectivity_service.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_theme.dart';
+import '../widgets/app_widgets.dart';
+
+class PedidosScreen extends StatefulWidget {
+  const PedidosScreen({super.key});
+  @override
+  State<PedidosScreen> createState() => _PedidosScreenState();
+}
+
+class _PedidosScreenState extends State<PedidosScreen> {
+  final repo = const PedidosRepository();
+  Pedido? selecionado;
+  late Future<List<Pedido>> pedidos;
+  @override
+  void initState() {
+    super.initState();
+    pedidos = repo.listar();
+  }
+
+  Future<void> iniciar() async {
+    if (selecionado == null) return;
+    if (!context.read<ConnectivityService>().online) {
+      _mensagem('É necessária conexão para reservar e baixar o pedido.');
+      return;
+    }
+    final comanda = await showDialog<String>(
+      context: context,
+      builder: (_) => _ComandaDialog(pedido: selecionado!),
+    );
+    if (comanda == null || !mounted) return;
+    final pedido = await repo.iniciar(selecionado!, comanda);
+    if (mounted) Navigator.pushNamed(context, '/separacao', arguments: pedido);
+  }
+
+  void _mensagem(String texto) => ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(texto)));
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: const TopBar(title: 'Pedidos a separar', back: true),
+    body: FutureBuilder<List<Pedido>>(
+      future: pedidos,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        return Column(
+          children: [
+            Expanded(
+              child: ListView.separated(
+                padding: const EdgeInsets.all(14),
+                itemCount: snapshot.data!.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (_, index) {
+                  final pedido = snapshot.data![index];
+                  final ativo = selecionado?.id == pedido.id;
+                  final frete = transportadora(pedido.codFornecFrete);
+                  return Card(
+                    color: ativo ? AppColors.accentSoft : null,
+                    child: ListTile(
+                      onTap: () => setState(() => selecionado = pedido),
+                      leading: Icon(
+                        ativo
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        color: ativo
+                            ? AppColors.accentDark
+                            : AppColors.mutedLight,
+                      ),
+                      title: Text(
+                        'Pedido: ${pedido.id}',
+                        style: AppTheme.monoBold,
+                      ),
+                      subtitle: Text(
+                        'Transport: ${frete.nome}\nData: ${pedido.dataFormatada}\nCliente: ${pedido.cliente}',
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: PrimaryButton(
+                label: 'Iniciar separação',
+                onPressed: selecionado == null ? null : iniciar,
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class _ComandaDialog extends StatefulWidget {
+  const _ComandaDialog({required this.pedido});
+  final Pedido pedido;
+  @override
+  State<_ComandaDialog> createState() => _ComandaDialogState();
+}
+
+class _ComandaDialogState extends State<_ComandaDialog> {
+  final campo = TextEditingController();
+  String? erro;
+  @override
+  void dispose() {
+    campo.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('Pedido ${widget.pedido.id}'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(widget.pedido.cliente),
+        const SizedBox(height: 16),
+        TextField(
+          controller: campo,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Número da comanda'),
+        ),
+        if (erro != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(erro!, style: const TextStyle(color: AppColors.danger)),
+          ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('CANCELAR'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (campo.text.trim().isEmpty) {
+            setState(() => erro = 'Número da comanda é obrigatório');
+          } else {
+            Navigator.pop(context, campo.text.trim());
+          }
+        },
+        child: const Text('OK'),
+      ),
+    ],
+  );
+}
