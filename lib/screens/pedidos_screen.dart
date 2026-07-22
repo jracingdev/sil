@@ -6,6 +6,7 @@ import '../data/mock_data.dart';
 import '../data/repositories/pedidos_repository.dart';
 import '../models/pedido.dart';
 import '../services/connectivity_service.dart';
+import '../services/session_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_widgets.dart';
@@ -28,13 +29,15 @@ class _PedidosScreenState extends State<PedidosScreen> {
     super.didChangeDependencies();
     if (_carregou) return;
     _carregou = true;
-    pedidos = repo.listar();
+    final codfilial = context.read<SessionService>().operador?.codfilial;
+    pedidos = repo.listar(codfilial: codfilial);
   }
 
   Future<void> _recarregar() async {
+    final codfilial = context.read<SessionService>().operador?.codfilial;
     setState(() {
       selecionado = null;
-      pedidos = repo.listar();
+      pedidos = repo.listar(codfilial: codfilial);
     });
   }
 

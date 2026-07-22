@@ -9,11 +9,11 @@ class PedidosRepository {
 
   final SilApiClient? api;
 
-  Future<List<Pedido>> listar() async {
+  Future<List<Pedido>> listar({int? codfilial}) async {
     if (ApiConfig.useMock || api == null) {
       return _listarMock();
     }
-    return api!.listarPedidos();
+    return api!.listarPedidos(codfilial: codfilial);
   }
 
   Future<List<Pedido>> _listarMock() async {

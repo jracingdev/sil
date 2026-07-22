@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -15,12 +16,16 @@ class LoginResult {
 
 /// Cliente HTTP da API S.I.L. (`api/`).
 class SilApiClient {
-  SilApiClient({http.Client? httpClient, String? baseUrl})
-    : _http = httpClient ?? http.Client(),
-      baseUrl = baseUrl ?? ApiConfig.baseUrl;
+  SilApiClient({
+    http.Client? httpClient,
+    String? baseUrl,
+    this.timeout = const Duration(seconds: 15),
+  }) : _http = httpClient ?? http.Client(),
+       baseUrl = baseUrl ?? ApiConfig.baseUrl;
 
   final http.Client _http;
   final String baseUrl;
+  final Duration timeout;
   String? authToken;
 
   Uri _uri(String path, [Map<String, String>? query]) {
@@ -108,7 +113,12 @@ class SilApiClient {
 
   Future<http.Response> _send(Future<http.Response> Function() call) async {
     try {
-      return await call();
+      return await call().timeout(timeout);
+    } on TimeoutException {
+      throw ApiException(
+        'A API não respondeu a tempo ($baseUrl).',
+        codigo: 'timeout',
+      );
     } on http.ClientException {
       throw ApiException(
         'Sem conexão com a API ($baseUrl). Verifique se o servidor está no ar.',
