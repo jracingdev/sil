@@ -32,6 +32,7 @@ try {
 }
 
 $script:StepLabels = @{}
+$script:StepStatus = @{}
 $script:IsRunning = $false
 $script:LastApk = $null
 $script:DeployPs = $null
@@ -39,6 +40,8 @@ $script:DeployHandle = $null
 $script:DeployRunspace = $null
 $script:Sync = $null
 $script:LogCursor = 0
+$script:ProgressDisplay = 0
+$script:ProgressTarget = 0
 
 function Add-LogLine([string]$msg, [string]$level) {
   if (-not $txtLog -or $txtLog.IsDisposed) { return }
@@ -55,8 +58,59 @@ function Add-LogLine([string]$msg, [string]$level) {
   $txtLog.ScrollToCaret()
 }
 
+function Update-ProgressBar {
+  param([switch]$Immediate)
+
+  $total = [math]::Max(1, $script:SilDeploySteps.Count)
+  $finished = 0
+  $running = $false
+  foreach ($s in $script:SilDeploySteps) {
+    $st = $script:StepStatus[$s.Id]
+    if (-not $st) { $st = 'pending' }
+    if ($st -in @('done', 'skipped', 'error')) { $finished++ }
+    if ($st -eq 'running') { $running = $true }
+  }
+
+  # Passos concluidos + metade do passo em andamento = sensacao de progresso continuo
+  $pct = [int][math]::Round((($finished + $(if ($running) { 0.45 } else { 0 })) / $total) * 100)
+  if ($pct -gt 100) { $pct = 100 }
+  if ($script:IsRunning -and $pct -ge 100 -and $finished -lt $total) { $pct = 99 }
+  if (-not $script:IsRunning -and $finished -eq 0) { $pct = 0 }
+
+  $script:ProgressTarget = $pct
+  if ($Immediate) {
+    $script:ProgressDisplay = $pct
+  } else {
+    # animacao suave em direcao ao alvo
+    if ($script:ProgressDisplay -lt $script:ProgressTarget) {
+      $step = [math]::Max(1, [math]::Ceiling(($script:ProgressTarget - $script:ProgressDisplay) / 4))
+      $script:ProgressDisplay = [math]::Min($script:ProgressTarget, $script:ProgressDisplay + $step)
+    } elseif ($script:ProgressDisplay -gt $script:ProgressTarget) {
+      $script:ProgressDisplay = $script:ProgressTarget
+    }
+  }
+
+  if ($progress -and -not $progress.IsDisposed) {
+    $progress.Style = 'Continuous'
+    $progress.Minimum = 0
+    $progress.Maximum = 100
+    $progress.Value = [math]::Max(0, [math]::Min(100, [int]$script:ProgressDisplay))
+  }
+  if ($lblPercent -and -not $lblPercent.IsDisposed) {
+    $lblPercent.Text = "{0}%" -f [int]$script:ProgressDisplay
+    if ($script:IsRunning) {
+      $lblPercent.ForeColor = [Drawing.Color]::FromArgb(16, 80, 180)
+    } elseif ($script:ProgressDisplay -ge 100) {
+      $lblPercent.ForeColor = [Drawing.Color]::FromArgb(20, 120, 60)
+    } else {
+      $lblPercent.ForeColor = [Drawing.Color]::FromArgb(60, 60, 60)
+    }
+  }
+}
+
 function Set-StepUi([string]$id, [string]$status, [string]$detail) {
   if (-not $script:StepLabels.ContainsKey($id)) { return }
+  $script:StepStatus[$id] = $status
   $lbl = $script:StepLabels[$id]
   $base = [string]$lbl.Tag
   $icon = switch ($status) {
@@ -82,10 +136,17 @@ function Set-StepUi([string]$id, [string]$status, [string]$detail) {
     $lblStatus.Text = "Em andamento: $base"
     $lblStatus.ForeColor = [Drawing.Color]::FromArgb(16, 80, 180)
   }
+  Update-ProgressBar
 }
 
 function Reset-Steps {
-  foreach ($s in $script:SilDeploySteps) { Set-StepUi $s.Id 'pending' '' }
+  foreach ($s in $script:SilDeploySteps) {
+    $script:StepStatus[$s.Id] = 'pending'
+    Set-StepUi $s.Id 'pending' ''
+  }
+  $script:ProgressDisplay = 0
+  $script:ProgressTarget = 0
+  Update-ProgressBar -Immediate
   $lblStatus.Text = 'Pronto. Revise os dados e clique em Iniciar instalacao.'
   $lblStatus.ForeColor = [Drawing.Color]::FromArgb(40, 40, 40)
 }
@@ -143,9 +204,10 @@ function Set-UiBusy([bool]$busy) {
   $btnStart.Enabled = -not $busy
   $btnDry.Enabled = -not $busy
   $grpConfig.Enabled = -not $busy
-  $progress.Style = if ($busy) { 'Marquee' } else { 'Blocks' }
-  $progress.MarqueeAnimationSpeed = if ($busy) { 30 } else { 0 }
-  if (-not $busy) { $timer.Stop() }
+  if (-not $busy) {
+    # deixa o timer animar ate o percentual final; para apos sync
+  }
+  Update-ProgressBar
 }
 
 function Clear-DeployRunspace {
@@ -258,10 +320,19 @@ function Update-FromSync {
     Set-StepUi $key $st.S $st.D
   }
 
+  # anima a barra mesmo entre atualizacoes de passo
+  Update-ProgressBar
+
   if (-not $sync.Done) { return }
 
-  $timer.Stop()
+  # garante 100% ao terminar com sucesso
+  if (-not $sync.Error) {
+    $script:ProgressTarget = 100
+    Update-ProgressBar -Immediate
+  }
+
   Set-UiBusy $false
+  $timer.Stop()
 
   if ($sync.Error) {
     $lblStatus.Text = "Falhou: $($sync.Error)"
@@ -317,16 +388,37 @@ $header.Controls.Add($lblSub)
 
 $lblStatus = New-Object Windows.Forms.Label
 $lblStatus.Dock = 'Bottom'
-$lblStatus.Height = 28
+$lblStatus.Height = 26
 $lblStatus.BackColor = [Drawing.Color]::FromArgb(230, 235, 240)
 $lblStatus.TextAlign = 'MiddleLeft'
 $lblStatus.Padding = New-Object Windows.Forms.Padding(10, 0, 0, 0)
 $form.Controls.Add($lblStatus)
 
+$panelProgress = New-Object Windows.Forms.Panel
+$panelProgress.Dock = 'Bottom'
+$panelProgress.Height = 36
+$panelProgress.BackColor = [Drawing.Color]::FromArgb(236, 240, 245)
+$panelProgress.Padding = New-Object Windows.Forms.Padding(12, 8, 12, 8)
+$form.Controls.Add($panelProgress)
+
+$lblPercent = New-Object Windows.Forms.Label
+$lblPercent.Text = '0%'
+$lblPercent.AutoSize = $false
+$lblPercent.Width = 48
+$lblPercent.Dock = 'Right'
+$lblPercent.TextAlign = 'MiddleCenter'
+$lblPercent.Font = New-Object Drawing.Font('Segoe UI Semibold', 10)
+$lblPercent.ForeColor = [Drawing.Color]::FromArgb(60, 60, 60)
+$panelProgress.Controls.Add($lblPercent)
+
 $progress = New-Object Windows.Forms.ProgressBar
-$progress.Dock = 'Bottom'
-$progress.Height = 10
-$form.Controls.Add($progress)
+$progress.Dock = 'Fill'
+$progress.Height = 20
+$progress.Minimum = 0
+$progress.Maximum = 100
+$progress.Value = 0
+$progress.Style = 'Continuous'
+$panelProgress.Controls.Add($progress)
 
 $split = New-Object Windows.Forms.SplitContainer
 $split.Dock = 'Fill'
