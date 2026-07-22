@@ -6,6 +6,9 @@ mais API intermediária em Dart (`api/`).
 **Instalação no cliente:** ver o manual completo  
 [`MANUAL_INSTALACAO_CLIENTE.md`](MANUAL_INSTALACAO_CLIENTE.md).
 
+**Deploy automatizado (recomendado):** pasta [`instalador/`](instalador/) —  
+abra [`instalador/Abrir-Instalador.bat`](instalador/Abrir-Instalador.bat) (tela visual com checklist).
+
 ## Arquitetura
 
 ```
