@@ -1,34 +1,47 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Interface visual do instalador S.I.L. para acompanhamento pelo cliente.
+  Interface visual do instalador S.I.L.
 
 .DESCRIPTION
-  Abre uma janela com checklist de procedimentos, formulario de configuracao
-  e log em tempo real - para transmitir transparencia e confianca no deploy.
+  Checklist ao vivo + log. O trabalho pesado roda em Runspace separado
+  (ThreadPool do .NET quebrava as funcoes PowerShell).
 
 .EXAMPLE
   .\Abrir-Instalador.ps1
 #>
-param(
-  [string]$Config
-)
+param([string]$Config)
 
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+$script:UiErrorLog = Join-Path $PSScriptRoot 'instalador_erro.txt'
 
-. "$PSScriptRoot\SilEngine.ps1"
+try {
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -AssemblyName System.Drawing
+  . "$PSScriptRoot\SilEngine.ps1"
+  [System.Windows.Forms.Application]::EnableVisualStyles()
+} catch {
+  $_ | Out-File -FilePath $script:UiErrorLog -Encoding utf8
+  [System.Windows.Forms.MessageBox]::Show(
+    "Falha ao iniciar o instalador.`r`n`r`n$($_.Exception.Message)`r`n`r`nDetalhes: $script:UiErrorLog",
+    'S.I.L.',
+    'OK',
+    'Error'
+  ) | Out-Null
+  exit 1
+}
 
-[System.Windows.Forms.Application]::EnableVisualStyles()
-
-# ---- state ----
 $script:StepLabels = @{}
 $script:IsRunning = $false
 $script:LastApk = $null
+$script:DeployPs = $null
+$script:DeployHandle = $null
+$script:DeployRunspace = $null
+$script:Sync = $null
+$script:LogCursor = 0
 
 function Add-LogLine([string]$msg, [string]$level) {
-  if ($txtLog.IsDisposed) { return }
+  if (-not $txtLog -or $txtLog.IsDisposed) { return }
   $ts = Get-Date -Format 'HH:mm:ss'
   $prefix = switch ($level) {
     'ok'   { '[OK]   ' }
@@ -45,7 +58,7 @@ function Add-LogLine([string]$msg, [string]$level) {
 function Set-StepUi([string]$id, [string]$status, [string]$detail) {
   if (-not $script:StepLabels.ContainsKey($id)) { return }
   $lbl = $script:StepLabels[$id]
-  $base = $lbl.Tag
+  $base = [string]$lbl.Tag
   $icon = switch ($status) {
     'pending' { '[ ]' }
     'running' { '[>]' }
@@ -71,31 +84,9 @@ function Set-StepUi([string]$id, [string]$status, [string]$detail) {
   }
 }
 
-$script:SilLogHandler = {
-  param($Message, $Level)
-  if ($form.InvokeRequired) {
-    $form.BeginInvoke([Action[string,string]]{ param($m,$l) Add-LogLine $m $l }, $Message, $Level) | Out-Null
-  } else {
-    Add-LogLine $Message $Level
-  }
-}
-
-$script:SilStepHandler = {
-  param($Id, $Status, $Detail)
-  if ($form.InvokeRequired) {
-    $form.BeginInvoke([Action[string,string,string]]{
-      param($i,$s,$d) Set-StepUi $i $s $d
-    }, $Id, $Status, $Detail) | Out-Null
-  } else {
-    Set-StepUi $Id $Status $Detail
-  }
-}
-
 function Reset-Steps {
-  foreach ($s in $script:SilDeploySteps) {
-    Set-StepUi $s.Id 'pending' ''
-  }
-  $lblStatus.Text = 'Pronto para iniciar. Revise os dados a esquerda e clique em Iniciar instalacao.'
+  foreach ($s in $script:SilDeploySteps) { Set-StepUi $s.Id 'pending' '' }
+  $lblStatus.Text = 'Pronto. Revise os dados e clique em Iniciar instalacao.'
   $lblStatus.ForeColor = [Drawing.Color]::FromArgb(40, 40, 40)
 }
 
@@ -154,9 +145,143 @@ function Set-UiBusy([bool]$busy) {
   $grpConfig.Enabled = -not $busy
   $progress.Style = if ($busy) { 'Marquee' } else { 'Blocks' }
   $progress.MarqueeAnimationSpeed = if ($busy) { 30 } else { 0 }
+  if (-not $busy) { $timer.Stop() }
 }
 
-# ---- form ----
+function Clear-DeployRunspace {
+  try {
+    if ($script:DeployPs -and $script:DeployHandle) {
+      if ($script:DeployHandle.IsCompleted) {
+        try { $script:DeployPs.EndInvoke($script:DeployHandle) | Out-Null } catch {}
+      } else {
+        try { $script:DeployPs.Stop() } catch {}
+      }
+    }
+  } catch {}
+  try { if ($script:DeployPs) { $script:DeployPs.Dispose() } } catch {}
+  try { if ($script:DeployRunspace) { $script:DeployRunspace.Close(); $script:DeployRunspace.Dispose() } } catch {}
+  $script:DeployPs = $null
+  $script:DeployHandle = $null
+  $script:DeployRunspace = $null
+}
+
+function Start-DeployJob([bool]$dry) {
+  if ($script:IsRunning) { return }
+  if (-not $txtCliente.Text.Trim()) {
+    [Windows.Forms.MessageBox]::Show('Informe o nome do cliente.', 'S.I.L.', 'OK', 'Warning') | Out-Null
+    return
+  }
+  if (-not $txtIp.Text.Trim()) {
+    [Windows.Forms.MessageBox]::Show('Informe o IP da API.', 'S.I.L.', 'OK', 'Warning') | Out-Null
+    return
+  }
+  if (-not (Test-Path $txtRepo.Text.Trim())) {
+    [Windows.Forms.MessageBox]::Show("Pasta do projeto nao encontrada:`r`n$($txtRepo.Text)", 'S.I.L.', 'OK', 'Warning') | Out-Null
+    return
+  }
+
+  $adminHint = ''
+  if ($chkFirewall.Checked -and -not (Sil-IsAdmin)) {
+    $adminHint = "`r`n`r`nObs: sem Administrador o firewall pode falhar (o restante segue)."
+  }
+  $modo = if ($dry) { 'SIMULACAO' } else { 'INSTALACAO REAL' }
+  $msg = "Sera configurado o S.I.L. neste computador.`r`n`r`nCliente: $($txtCliente.Text)`r`nAPI: http://$($txtIp.Text):$($numPort.Value)`r`nModo: $modo$adminHint`r`n`r`nDeseja continuar?"
+  if ([Windows.Forms.MessageBox]::Show($msg, 'S.I.L. - Confirmacao', 'YesNo', 'Question') -ne 'Yes') { return }
+
+  Clear-DeployRunspace
+  Reset-Steps
+  $txtLog.Clear()
+  Set-UiBusy $true
+  $cfg = Get-FormConfig
+  $script:LogCursor = 0
+
+  $sync = [hashtable]::Synchronized(@{
+    Logs   = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+    Steps  = [hashtable]::Synchronized(@{})
+    Done   = $false
+    Error  = $null
+    Result = $null
+    Dry    = $dry
+  })
+  $script:Sync = $sync
+
+  $enginePath = Join-Path $PSScriptRoot 'SilEngine.ps1'
+  $rs = [runspacefactory]::CreateRunspace()
+  $rs.ApartmentState = 'MTA'
+  $rs.ThreadOptions = 'ReuseThread'
+  $rs.Open()
+  $ps = [powershell]::Create()
+  $ps.Runspace = $rs
+
+  [void]$ps.AddScript({
+    param($EnginePath, $Cfg, $DryRunFlag, $Sync)
+    $ErrorActionPreference = 'Stop'
+    . $EnginePath
+    $script:SilLogHandler = {
+      param($Message, $Level)
+      [void]$Sync.Logs.Add(@{ M = [string]$Message; L = [string]$Level; T = (Get-Date) })
+    }
+    $script:SilStepHandler = {
+      param($Id, $Status, $Detail)
+      $Sync.Steps[[string]$Id] = @{ S = [string]$Status; D = [string]$Detail }
+    }
+    try {
+      $Sync.Result = Sil-RunDeploy -Cfg $Cfg -DoApi $true -DoApk $true -DryRun:$DryRunFlag
+      $Sync.Done = $true
+    } catch {
+      $Sync.Error = $_.Exception.Message
+      $Sync.Steps['fim'] = @{ S = 'error'; D = $_.Exception.Message }
+      [void]$Sync.Logs.Add(@{ M = $_.Exception.Message; L = 'err'; T = (Get-Date) })
+      $Sync.Done = $true
+    }
+  }).AddArgument($enginePath).AddArgument($cfg).AddArgument($dry).AddArgument($sync)
+
+  $script:DeployRunspace = $rs
+  $script:DeployPs = $ps
+  $script:DeployHandle = $ps.BeginInvoke()
+  $timer.Start()
+  Add-LogLine 'Execucao iniciada em segundo plano...' 'info'
+}
+
+function Update-FromSync {
+  $sync = $script:Sync
+  if (-not $sync) { return }
+
+  while ($script:LogCursor -lt $sync.Logs.Count) {
+    $item = $sync.Logs[$script:LogCursor]
+    Add-LogLine $item.M $item.L
+    $script:LogCursor++
+  }
+
+  foreach ($key in @($sync.Steps.Keys)) {
+    $st = $sync.Steps[$key]
+    Set-StepUi $key $st.S $st.D
+  }
+
+  if (-not $sync.Done) { return }
+
+  $timer.Stop()
+  Set-UiBusy $false
+
+  if ($sync.Error) {
+    $lblStatus.Text = "Falhou: $($sync.Error)"
+    $lblStatus.ForeColor = [Drawing.Color]::FromArgb(180, 40, 40)
+    [Windows.Forms.MessageBox]::Show($sync.Error, 'S.I.L. - Erro', 'OK', 'Error') | Out-Null
+  } else {
+    if ($sync.Result -and $sync.Result.ApkPath) { $script:LastApk = $sync.Result.ApkPath }
+    $lblStatus.Text = if ($sync.Dry) { 'Simulacao concluida.' } else { 'Instalacao concluida com sucesso.' }
+    $lblStatus.ForeColor = [Drawing.Color]::FromArgb(20, 120, 60)
+    $body = if ($sync.Dry) {
+      'Simulacao concluida. Revise o log e a lista de procedimentos.'
+    } else {
+      "Concluido.`r`n`r`nConfig: $($sync.Result.ConfigPath)`r`nAPI: $($sync.Result.StartScript)`r`nAPK: $($sync.Result.ApkPath)"
+    }
+    [Windows.Forms.MessageBox]::Show($body, 'S.I.L.', 'OK', 'Information') | Out-Null
+  }
+  Clear-DeployRunspace
+}
+
+# ---- UI ----
 $form = New-Object Windows.Forms.Form
 $form.Text = 'S.I.L. - Instalador visual no cliente'
 $form.Size = New-Object Drawing.Size(980, 720)
@@ -164,6 +289,10 @@ $form.StartPosition = 'CenterScreen'
 $form.MinimumSize = New-Object Drawing.Size(900, 640)
 $form.BackColor = [Drawing.Color]::FromArgb(245, 247, 250)
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
+
+$timer = New-Object Windows.Forms.Timer
+$timer.Interval = 250
+$timer.Add_Tick({ Update-FromSync })
 
 $header = New-Object Windows.Forms.Panel
 $header.Dock = 'Top'
@@ -189,8 +318,9 @@ $header.Controls.Add($lblSub)
 $lblStatus = New-Object Windows.Forms.Label
 $lblStatus.Dock = 'Bottom'
 $lblStatus.Height = 28
-$lblStatus.Padding = New-Object Windows.Forms.Padding(12, 6, 12, 4)
 $lblStatus.BackColor = [Drawing.Color]::FromArgb(230, 235, 240)
+$lblStatus.TextAlign = 'MiddleLeft'
+$lblStatus.Padding = New-Object Windows.Forms.Padding(10, 0, 0, 0)
 $form.Controls.Add($lblStatus)
 
 $progress = New-Object Windows.Forms.ProgressBar
@@ -198,17 +328,10 @@ $progress.Dock = 'Bottom'
 $progress.Height = 10
 $form.Controls.Add($progress)
 
-# main split
 $split = New-Object Windows.Forms.SplitContainer
 $split.Dock = 'Fill'
-$split.Orientation = 'Vertical'
 $split.SplitterDistance = 360
-$split.Panel1MinSize = 300
-$split.Panel2MinSize = 400
 $form.Controls.Add($split)
-# bring header back on top visually - dock order: add split first then re-add? 
-# Actually dock fill fills remaining; header top and status bottom already added.
-# Fix z-order: progress and status should stay at bottom
 $form.Controls.SetChildIndex($split, 0)
 
 $grpConfig = New-Object Windows.Forms.GroupBox
@@ -223,7 +346,6 @@ function New-Lbl([string]$text, [int]$x, [int]$y) {
   $l.Location = New-Object Drawing.Point($x, $y)
   $l.AutoSize = $true
   $grpConfig.Controls.Add($l)
-  return $l
 }
 function New-Txt([int]$x, [int]$y, [int]$w = 300) {
   $t = New-Object Windows.Forms.TextBox
@@ -234,11 +356,11 @@ function New-Txt([int]$x, [int]$y, [int]$w = 300) {
 }
 
 $y = 28
-[void](New-Lbl 'Nome do cliente' 16 $y); $y += 18
+New-Lbl 'Nome do cliente' 16 $y; $y += 18
 $txtCliente = New-Txt 16 $y; $y += 32
-[void](New-Lbl 'Pasta do projeto (sil)' 16 $y); $y += 18
+New-Lbl 'Pasta do projeto (sil)' 16 $y; $y += 18
 $txtRepo = New-Txt 16 $y; $y += 32
-[void](New-Lbl 'IP da API (visto pelos coletores)' 16 $y); $y += 18
+New-Lbl 'IP da API (visto pelos coletores)' 16 $y; $y += 18
 $txtIp = New-Txt 16 $y 180
 $btnDetectIp = New-Object Windows.Forms.Button
 $btnDetectIp.Text = 'Detectar'
@@ -246,27 +368,28 @@ $btnDetectIp.Location = New-Object Drawing.Point(205, ($y - 2))
 $btnDetectIp.Width = 90
 $grpConfig.Controls.Add($btnDetectIp)
 $y += 32
-[void](New-Lbl 'Porta' 16 $y)
+New-Lbl 'Porta' 16 $y
 $numPort = New-Object Windows.Forms.NumericUpDown
 $numPort.Location = New-Object Drawing.Point(60, ($y - 2))
 $numPort.Minimum = 1; $numPort.Maximum = 65535; $numPort.Value = 8080
 $numPort.Width = 80
 $grpConfig.Controls.Add($numPort)
 $y += 32
-[void](New-Lbl 'Flutter/Dart (pasta bin)' 16 $y); $y += 18
+New-Lbl 'Flutter/Dart (pasta bin)' 16 $y; $y += 18
 $txtFlutter = New-Txt 16 $y; $y += 32
-[void](New-Lbl 'Pasta de build (sem espaco)' 16 $y); $y += 18
+New-Lbl 'Pasta de build (sem espaco)' 16 $y; $y += 18
 $txtBuild = New-Txt 16 $y; $y += 32
-[void](New-Lbl 'Provedor Winthor' 16 $y); $y += 18
+New-Lbl 'Provedor Winthor' 16 $y; $y += 18
 $cmbWinthor = New-Object Windows.Forms.ComboBox
 $cmbWinthor.DropDownStyle = 'DropDownList'
-$cmbWinthor.Items.AddRange(@('mock (demonstracao)', 'oracle (ERP real)'))
+[void]$cmbWinthor.Items.Add('mock (demonstracao)')
+[void]$cmbWinthor.Items.Add('oracle (ERP real)')
 $cmbWinthor.Location = New-Object Drawing.Point(16, $y)
 $cmbWinthor.Width = 280
 $cmbWinthor.SelectedIndex = 0
 $grpConfig.Controls.Add($cmbWinthor)
 $y += 32
-[void](New-Lbl 'Oracle CONN / USER / SENHA' 16 $y); $y += 18
+New-Lbl 'Oracle CONN / USER / SENHA' 16 $y; $y += 18
 $txtOracleConn = New-Txt 16 $y; $y += 26
 $txtOracleUser = New-Txt 16 $y 140
 $txtOraclePass = New-Txt 165 $y 140
@@ -274,36 +397,19 @@ $txtOraclePass.UseSystemPasswordChar = $true
 $y += 36
 
 $chkRelease = New-Object Windows.Forms.CheckBox
-$chkRelease.Text = 'APK release'
-$chkRelease.Location = New-Object Drawing.Point(16, $y)
-$chkRelease.AutoSize = $true
-$chkRelease.Checked = $true
-$grpConfig.Controls.Add($chkRelease)
-$y += 24
+$chkRelease.Text = 'APK release'; $chkRelease.Location = New-Object Drawing.Point(16, $y); $chkRelease.AutoSize = $true; $chkRelease.Checked = $true
+$grpConfig.Controls.Add($chkRelease); $y += 24
 $chkFirewall = New-Object Windows.Forms.CheckBox
-$chkFirewall.Text = 'Liberar firewall da porta'
-$chkFirewall.Location = New-Object Drawing.Point(16, $y)
-$chkFirewall.AutoSize = $true
-$chkFirewall.Checked = $true
-$grpConfig.Controls.Add($chkFirewall)
-$y += 24
+$chkFirewall.Text = 'Liberar firewall da porta'; $chkFirewall.Location = New-Object Drawing.Point(16, $y); $chkFirewall.AutoSize = $true; $chkFirewall.Checked = $true
+$grpConfig.Controls.Add($chkFirewall); $y += 24
 $chkStartApi = New-Object Windows.Forms.CheckBox
-$chkStartApi.Text = 'Iniciar API ao concluir preparo'
-$chkStartApi.Location = New-Object Drawing.Point(16, $y)
-$chkStartApi.AutoSize = $true
-$chkStartApi.Checked = $true
-$grpConfig.Controls.Add($chkStartApi)
-$y += 24
+$chkStartApi.Text = 'Iniciar API ao concluir preparo'; $chkStartApi.Location = New-Object Drawing.Point(16, $y); $chkStartApi.AutoSize = $true; $chkStartApi.Checked = $true
+$grpConfig.Controls.Add($chkStartApi); $y += 24
 $chkStartup = New-Object Windows.Forms.CheckBox
-$chkStartup.Text = 'Atalho no logon do Windows'
-$chkStartup.Location = New-Object Drawing.Point(16, $y)
-$chkStartup.AutoSize = $true
-$grpConfig.Controls.Add($chkStartup)
-$y += 24
+$chkStartup.Text = 'Atalho no logon do Windows'; $chkStartup.Location = New-Object Drawing.Point(16, $y); $chkStartup.AutoSize = $true
+$grpConfig.Controls.Add($chkStartup); $y += 24
 $chkAdb = New-Object Windows.Forms.CheckBox
-$chkAdb.Text = 'Instalar no coletor (ADB) se conectado'
-$chkAdb.Location = New-Object Drawing.Point(16, $y)
-$chkAdb.AutoSize = $true
+$chkAdb.Text = 'Instalar no coletor (ADB) se conectado'; $chkAdb.Location = New-Object Drawing.Point(16, $y); $chkAdb.AutoSize = $true
 $grpConfig.Controls.Add($chkAdb)
 
 $cmbWinthor.Add_SelectedIndexChanged({ Update-OracleEnabled })
@@ -313,12 +419,48 @@ $btnDetectIp.Add_Click({
     [Windows.Forms.MessageBox]::Show('Nenhum IPv4 de LAN detectado.', 'S.I.L.', 'OK', 'Warning') | Out-Null
     return
   }
-  if ($ips.Count -eq 1) { $txtIp.Text = $ips[0]; return }
-  $pick = $ips | Out-GridView -Title 'Selecione o IP da API' -OutputMode Single
-  if ($pick) { $txtIp.Text = $pick }
+  $txtIp.Text = $ips[0]
+  if ($ips.Count -gt 1) {
+    $lista = $ips -join ', '
+    Add-LogLine "Varios IPs detectados ($lista). Usando o primeiro: $($ips[0]). Ajuste manualmente se precisar." 'warn'
+    [Windows.Forms.MessageBox]::Show(
+      "Varios IPs encontrados.`r`n`r`n$lista`r`n`r`nFoi selecionado: $($ips[0])`r`nAltere o campo IP se nao for o da rede dos coletores.",
+      'S.I.L. - IP',
+      'OK',
+      'Information'
+    ) | Out-Null
+  }
 })
 
-# right panel: steps + log
+$btnPanel = New-Object Windows.Forms.FlowLayoutPanel
+$btnPanel.Dock = 'Bottom'
+$btnPanel.Height = 48
+$btnPanel.Padding = New-Object Windows.Forms.Padding(8)
+$split.Panel1.Controls.Add($btnPanel)
+
+$btnStart = New-Object Windows.Forms.Button
+$btnStart.Text = 'Iniciar instalacao'
+$btnStart.Width = 150; $btnStart.Height = 32
+$btnStart.BackColor = [Drawing.Color]::FromArgb(16, 43, 78)
+$btnStart.ForeColor = [Drawing.Color]::White
+$btnStart.FlatStyle = 'Flat'
+$btnPanel.Controls.Add($btnStart)
+
+$btnDry = New-Object Windows.Forms.Button
+$btnDry.Text = 'Simular (Dry-Run)'
+$btnDry.Width = 130; $btnDry.Height = 32
+$btnPanel.Controls.Add($btnDry)
+
+$btnOpen = New-Object Windows.Forms.Button
+$btnOpen.Text = 'Abrir pasta APK'
+$btnOpen.Width = 120; $btnOpen.Height = 32
+$btnPanel.Controls.Add($btnOpen)
+
+$btnLoad = New-Object Windows.Forms.Button
+$btnLoad.Text = 'Carregar JSON'
+$btnLoad.Width = 110; $btnLoad.Height = 32
+$btnPanel.Controls.Add($btnLoad)
+
 $right = New-Object Windows.Forms.SplitContainer
 $right.Dock = 'Fill'
 $right.Orientation = 'Horizontal'
@@ -328,7 +470,6 @@ $split.Panel2.Controls.Add($right)
 $grpSteps = New-Object Windows.Forms.GroupBox
 $grpSteps.Text = 'Procedimentos (acompanhe em tempo real)'
 $grpSteps.Dock = 'Fill'
-$grpSteps.Padding = New-Object Windows.Forms.Padding(8)
 $right.Panel1.Controls.Add($grpSteps)
 
 $panelSteps = New-Object Windows.Forms.Panel
@@ -365,106 +506,6 @@ $txtLog.BackColor = [Drawing.Color]::FromArgb(30, 34, 40)
 $txtLog.ForeColor = [Drawing.Color]::FromArgb(220, 230, 220)
 $grpLog.Controls.Add($txtLog)
 
-# buttons bar inside right bottom of config? Put under form as flow on panel1 bottom
-$btnPanel = New-Object Windows.Forms.FlowLayoutPanel
-$btnPanel.Dock = 'Bottom'
-$btnPanel.Height = 48
-$btnPanel.Padding = New-Object Windows.Forms.Padding(8)
-$btnPanel.FlowDirection = 'LeftToRight'
-$split.Panel1.Controls.Add($btnPanel)
-$grpConfig.Dock = 'Fill'
-
-$btnStart = New-Object Windows.Forms.Button
-$btnStart.Text = 'Iniciar instalacao'
-$btnStart.Width = 150
-$btnStart.Height = 32
-$btnStart.BackColor = [Drawing.Color]::FromArgb(16, 43, 78)
-$btnStart.ForeColor = [Drawing.Color]::White
-$btnStart.FlatStyle = 'Flat'
-$btnPanel.Controls.Add($btnStart)
-
-$btnDry = New-Object Windows.Forms.Button
-$btnDry.Text = 'Simular (Dry-Run)'
-$btnDry.Width = 130
-$btnDry.Height = 32
-$btnPanel.Controls.Add($btnDry)
-
-$btnOpen = New-Object Windows.Forms.Button
-$btnOpen.Text = 'Abrir pasta APK'
-$btnOpen.Width = 120
-$btnOpen.Height = 32
-$btnPanel.Controls.Add($btnOpen)
-
-$btnLoad = New-Object Windows.Forms.Button
-$btnLoad.Text = 'Carregar JSON'
-$btnLoad.Width = 110
-$btnLoad.Height = 32
-$btnPanel.Controls.Add($btnLoad)
-
-function Start-DeployJob([bool]$dry) {
-  if ($script:IsRunning) { return }
-  if (-not $txtCliente.Text.Trim()) {
-    [Windows.Forms.MessageBox]::Show('Informe o nome do cliente.', 'S.I.L.', 'OK', 'Warning') | Out-Null
-    return
-  }
-  if (-not $txtIp.Text.Trim()) {
-    [Windows.Forms.MessageBox]::Show('Informe o IP da API.', 'S.I.L.', 'OK', 'Warning') | Out-Null
-    return
-  }
-  if (-not (Test-Path $txtRepo.Text.Trim())) {
-    [Windows.Forms.MessageBox]::Show("Pasta do projeto nao encontrada:`n$($txtRepo.Text)", 'S.I.L.', 'OK', 'Warning') | Out-Null
-    return
-  }
-
-  $adminHint = ''
-  if ($chkFirewall.Checked -and -not (Sil-IsAdmin)) {
-    $adminHint = "`n`nObs: sem Executar como Administrador o firewall pode falhar (o restante segue)."
-  }
-  $msg = "Sera instalado/configurado o S.I.L. neste computador.`n`nCliente: $($txtCliente.Text)`nAPI: http://$($txtIp.Text):$($numPort.Value)`nModo: $(if($dry){'SIMULACAO'}else{'INSTALACAO REAL'})$adminHint`n`nDeseja continuar?"
-  $r = [Windows.Forms.MessageBox]::Show($msg, 'S.I.L. - Confirmacao', 'YesNo', 'Question')
-  if ($r -ne 'Yes') { return }
-
-  Reset-Steps
-  $txtLog.Clear()
-  Set-UiBusy $true
-  $cfg = Get-FormConfig
-
-  # Run on thread pool to keep UI responsive
-  $state = @{ Dry = $dry; Cfg = $cfg; Form = $form }
-  [System.Threading.ThreadPool]::QueueUserWorkItem({
-    param($state)
-    $dryRun = [bool]$state.Dry
-    $config = $state.Cfg
-    $ui = $state.Form
-    try {
-      $res = Sil-RunDeploy -Cfg $config -DoApi $true -DoApk $true -DryRun:$dryRun
-      $payload = @{ Res = $res; Dry = $dryRun }
-      $ui.BeginInvoke([Action[hashtable]]{
-        param($p)
-        Set-UiBusy $false
-        if ($p.Res.ApkPath) { $script:LastApk = $p.Res.ApkPath }
-        $lblStatus.Text = if ($p.Dry) { 'Simulacao concluida.' } else { 'Instalacao concluida com sucesso.' }
-        $lblStatus.ForeColor = [Drawing.Color]::FromArgb(20, 120, 60)
-        $body = if ($p.Dry) {
-          'Simulacao concluida. Revise o log e a lista de procedimentos.'
-        } else {
-          "Concluido.`r`n`r`nConfig: $($p.Res.ConfigPath)`r`nAPI: $($p.Res.StartScript)`r`nAPK: $($p.Res.ApkPath)"
-        }
-        [Windows.Forms.MessageBox]::Show($body, 'S.I.L.', 'OK', 'Information') | Out-Null
-      }, $payload) | Out-Null
-    } catch {
-      $err = $_.Exception.Message
-      $ui.BeginInvoke([Action[string]]{
-        param($e)
-        Set-UiBusy $false
-        $lblStatus.Text = "Falhou: $e"
-        $lblStatus.ForeColor = [Drawing.Color]::FromArgb(180, 40, 40)
-        [Windows.Forms.MessageBox]::Show($e, 'S.I.L. - Erro', 'OK', 'Error') | Out-Null
-      }, $err) | Out-Null
-    }
-  }, $state) | Out-Null
-}
-
 $btnStart.Add_Click({ Start-DeployJob $false })
 $btnDry.Add_Click({ Start-DeployJob $true })
 $btnOpen.Add_Click({
@@ -486,7 +527,15 @@ $btnLoad.Add_Click({
   }
 })
 
-# init
+$form.Add_FormClosing({
+  if ($script:IsRunning) {
+    $r = [Windows.Forms.MessageBox]::Show('Ha uma instalacao em andamento. Fechar mesmo assim?', 'S.I.L.', 'YesNo', 'Warning')
+    if ($r -ne 'Yes') { $_.Cancel = $true; return }
+  }
+  $timer.Stop()
+  Clear-DeployRunspace
+})
+
 if ($Config -and (Test-Path $Config)) {
   Set-FormConfig (Sil-LoadConfig $Config)
 } else {
@@ -494,9 +543,9 @@ if ($Config -and (Test-Path $Config)) {
 }
 Reset-Steps
 Add-LogLine 'Instalador visual pronto. Revise os dados e clique em Iniciar instalacao.' 'info'
-Add-LogLine 'O cliente pode acompanhar cada procedimento na lista a direita.' 'info'
+Add-LogLine 'Cada procedimento aparece a direita com [>] em andamento e [OK] ao concluir.' 'info'
 if (-not (Sil-IsAdmin)) {
-  Add-LogLine 'Dica: execute como Administrador para liberar o firewall automaticamente.' 'warn'
+  Add-LogLine 'Dica: execute Abrir-Instalador.bat como Administrador para o firewall.' 'warn'
 }
 
 [void]$form.ShowDialog()

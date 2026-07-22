@@ -67,7 +67,22 @@ Set-ExecutionPolicy -Scope Process Bypass
 10. Instalar no coletor via ADB (opcional)  
 11. Finalizacao  
 
-## Limitaacoes ainda manuais
+## Se nao abrir / nao funcionar
+
+1. Clique direito em `Abrir-Instalador.bat` → **Executar como administrador**
+2. Se a janela nao abrir, veja `instalador_erro.txt` na mesma pasta
+3. Teste o motor sem tela:
+
+```powershell
+cd instalador
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar-SIL.ps1 -Config .\cliente.exemplo.json -DryRun
+```
+
+4. Politica de execucao (so na sessao atual):
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
 
 - SQL/Oracle Winthor (`OracleWinthorRepository`)
 - Keystore Play Store / politicas MDM avancadas

@@ -3,3 +3,4 @@ cliente-*.json
 !cliente.exemplo.json
 Iniciar-API-*.ps1
 saida/
+instalador_erro.txt
