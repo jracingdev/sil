@@ -14,59 +14,62 @@ class FilialScreen extends StatelessWidget {
     if (operador == null) return const SizedBox.shrink();
     return Scaffold(
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          child: Column(
-            children: [
-              const Spacer(),
-              const Icon(
-                Icons.verified_user_outlined,
-                size: 48,
-                color: AppColors.accentDark,
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'Você está logando como',
-                style: TextStyle(color: AppColors.muted),
-              ),
-              Text(
-                '${operador.matricula} - ${operador.nome}',
-                textAlign: TextAlign.center,
-                style: AppTheme.displayBold.copyWith(fontSize: 24),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Filial ${operador.codfilial}',
-                style: AppTheme.display.copyWith(fontSize: 19),
-              ),
-              const Spacer(),
-              Row(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Column(
                 children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () {
-                        context.read<SessionService>().logout();
-                        Navigator.pushNamedAndRemoveUntil(
-                          context,
-                          '/',
-                          (_) => false,
-                        );
-                      },
-                      child: const Text('NÃO'),
-                    ),
+                  const SizedBox(height: 72),
+                  const Icon(
+                    Icons.verified_user_outlined,
+                    size: 48,
+                    color: AppColors.accentDark,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: PrimaryButton(
-                      label: 'Sim',
-                      onPressed: () =>
-                          Navigator.pushReplacementNamed(context, '/menu'),
-                    ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Você está logando como',
+                    style: TextStyle(color: AppColors.muted),
+                  ),
+                  Text(
+                    '${operador.matricula} - ${operador.nome}',
+                    textAlign: TextAlign.center,
+                    style: AppTheme.displayBold.copyWith(fontSize: 24),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Filial ${operador.codfilial}',
+                    style: AppTheme.display.copyWith(fontSize: 19),
                   ),
                 ],
               ),
-            ],
+            ),
           ),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+        child: Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () {
+                  context.read<SessionService>().logout();
+                  Navigator.pushNamedAndRemoveUntil(context, '/', (_) => false);
+                },
+                child: const Text('NÃO'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: PrimaryButton(
+                label: 'Sim',
+                onPressed: () =>
+                    Navigator.pushReplacementNamed(context, '/menu'),
+              ),
+            ),
+          ],
         ),
       ),
     );

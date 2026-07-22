@@ -70,10 +70,10 @@ class MenuScreen extends StatelessWidget {
           ),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.all(18),
           children: [
             const Text(
               'Módulos liberados',
@@ -85,16 +85,18 @@ class MenuScreen extends StatelessWidget {
               texto: 'Separação de Pedido',
               onTap: () => _abrir(context, 'picking'),
             ),
-            const Spacer(),
-            OutlinedButton.icon(
-              onPressed: () {
-                context.read<SessionService>().logout();
-                Navigator.pushNamedAndRemoveUntil(context, '/', (_) => false);
-              },
-              icon: const Icon(Icons.logout),
-              label: const Text('SAIR'),
-            ),
           ],
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(18, 8, 18, 16),
+        child: OutlinedButton.icon(
+          onPressed: () {
+            context.read<SessionService>().logout();
+            Navigator.pushNamedAndRemoveUntil(context, '/', (_) => false);
+          },
+          icon: const Icon(Icons.logout),
+          label: const Text('SAIR'),
         ),
       ),
     );

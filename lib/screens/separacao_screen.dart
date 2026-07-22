@@ -105,12 +105,16 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
     if (faltantes.isNotEmpty) {
       final confirmar = await showModalBottomSheet<bool>(
         context: context,
+        isScrollControlled: true,
         builder: (_) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: .55,
+            minChildSize: .3,
+            maxChildSize: .9,
+            builder: (_, controller) => ListView(
+              controller: controller,
+              padding: const EdgeInsets.all(20),
               children: [
                 const Text(
                   'Itens abaixo da quantidade pedida',
@@ -293,16 +297,20 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
               },
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
+        ],
+      ),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(14, 8, 14, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
               'Cinza: bloqueado • Branco: liberado • Laranja: em coleta • Verde: concluído',
+              textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10, color: AppColors.muted),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
+            const SizedBox(height: 8),
+            Row(
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
@@ -320,8 +328,8 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
                 ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

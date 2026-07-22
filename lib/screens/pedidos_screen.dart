@@ -53,51 +53,38 @@ class _PedidosScreenState extends State<PedidosScreen> {
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        return Column(
-          children: [
-            Expanded(
-              child: ListView.separated(
-                padding: const EdgeInsets.all(14),
-                itemCount: snapshot.data!.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 8),
-                itemBuilder: (_, index) {
-                  final pedido = snapshot.data![index];
-                  final ativo = selecionado?.id == pedido.id;
-                  final frete = transportadora(pedido.codFornecFrete);
-                  return Card(
-                    color: ativo ? AppColors.accentSoft : null,
-                    child: ListTile(
-                      onTap: () => setState(() => selecionado = pedido),
-                      leading: Icon(
-                        ativo
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_off,
-                        color: ativo
-                            ? AppColors.accentDark
-                            : AppColors.mutedLight,
-                      ),
-                      title: Text(
-                        'Pedido: ${pedido.id}',
-                        style: AppTheme.monoBold,
-                      ),
-                      subtitle: Text(
-                        'Transport: ${frete.nome}\nData: ${pedido.dataFormatada}\nCliente: ${pedido.cliente}',
-                      ),
-                    ),
-                  );
-                },
+        return ListView.separated(
+          padding: const EdgeInsets.all(14),
+          itemCount: snapshot.data!.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 8),
+          itemBuilder: (_, index) {
+            final pedido = snapshot.data![index];
+            final ativo = selecionado?.id == pedido.id;
+            final frete = transportadora(pedido.codFornecFrete);
+            return Card(
+              color: ativo ? AppColors.accentSoft : null,
+              child: ListTile(
+                onTap: () => setState(() => selecionado = pedido),
+                leading: Icon(
+                  ativo ? Icons.radio_button_checked : Icons.radio_button_off,
+                  color: ativo ? AppColors.accentDark : AppColors.mutedLight,
+                ),
+                title: Text('Pedido: ${pedido.id}', style: AppTheme.monoBold),
+                subtitle: Text(
+                  'Transport: ${frete.nome}\nData: ${pedido.dataFormatada}\nCliente: ${pedido.cliente}',
+                ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: PrimaryButton(
-                label: 'Iniciar separação',
-                onPressed: selecionado == null ? null : iniciar,
-              ),
-            ),
-          ],
+            );
+          },
         );
       },
+    ),
+    bottomNavigationBar: SafeArea(
+      minimum: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      child: PrimaryButton(
+        label: 'Iniciar separação',
+        onPressed: selecionado == null ? null : iniciar,
+      ),
     ),
   );
 }
@@ -121,23 +108,28 @@ class _ComandaDialogState extends State<_ComandaDialog> {
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: Text('Pedido ${widget.pedido.id}'),
-    content: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(widget.pedido.cliente),
-        const SizedBox(height: 16),
-        TextField(
-          controller: campo,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Número da comanda'),
-        ),
-        if (erro != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(erro!, style: const TextStyle(color: AppColors.danger)),
+    content: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.pedido.cliente),
+          const SizedBox(height: 16),
+          TextField(
+            controller: campo,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Número da comanda'),
           ),
-      ],
+          if (erro != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                erro!,
+                style: const TextStyle(color: AppColors.danger),
+              ),
+            ),
+        ],
+      ),
     ),
     actions: [
       TextButton(

@@ -48,76 +48,102 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
+    resizeToAvoidBottomInset: true,
     body: SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Spacer(),
-            Container(
-              height: 96,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
+      child: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            color: const Color(0xFF102B4E),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            child: Text(
+              'RHM separação de pedidos',
+              style: AppTheme.display.copyWith(
                 color: Colors.white,
-                border: Border.all(color: AppColors.border),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Text(
-                'S.I.L.',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800),
+                fontSize: 21,
               ),
             ),
-            const SizedBox(height: 34),
-            Text(
-              'Login do operador',
-              style: AppTheme.displayBold.copyWith(fontSize: 28),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Sistema Integrado Logístico',
-              style: TextStyle(color: AppColors.muted),
-            ),
-            if (erro != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: Text(
-                  erro!,
-                  style: const TextStyle(
-                    color: AppColors.danger,
-                    fontWeight: FontWeight.w600,
-                  ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Image.asset(
+                        'assets/sil_logo.png',
+                        height: 112,
+                        fit: BoxFit.contain,
+                        semanticLabel: 'S.I.L. Sistema Integrado de Logistica',
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+                    Text(
+                      'Login do operador',
+                      style: AppTheme.displayBold.copyWith(fontSize: 28),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'SISTEMA INTEGRADO DE LOGISTICA',
+                      style: TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                    if (erro != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 16),
+                        child: Text(
+                          erro!,
+                          style: const TextStyle(
+                            color: AppColors.danger,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 28),
+                    TextField(
+                      controller: usuario,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'Usuário',
+                        prefixIcon: Icon(Icons.person_outline),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: senha,
+                      obscureText: true,
+                      onSubmitted: (_) => entrar(),
+                      decoration: const InputDecoration(
+                        labelText: 'Senha',
+                        prefixIcon: Icon(Icons.lock_outline),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'A filial é obtida do cadastro PCEMPR.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.mutedLight,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            const SizedBox(height: 28),
-            TextField(
-              controller: usuario,
-              textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(
-                labelText: 'Usuário',
-                prefixIcon: Icon(Icons.person_outline),
-              ),
             ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: senha,
-              obscureText: true,
-              onSubmitted: (_) => entrar(),
-              decoration: const InputDecoration(
-                labelText: 'Senha',
-                prefixIcon: Icon(Icons.lock_outline),
-              ),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'A filial é obtida do cadastro PCEMPR.',
-              style: TextStyle(fontSize: 11, color: AppColors.mutedLight),
-            ),
-            const Spacer(),
-            PrimaryButton(label: 'Entrar', onPressed: entrar),
-          ],
-        ),
+          ),
+        ],
       ),
+    ),
+    bottomNavigationBar: SafeArea(
+      minimum: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+      child: PrimaryButton(label: 'Entrar', onPressed: entrar),
     ),
   );
 }
