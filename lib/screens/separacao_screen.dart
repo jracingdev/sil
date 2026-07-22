@@ -5,9 +5,11 @@ import '../data/local/pedido_store.dart';
 import '../data/repositories/pedidos_repository.dart';
 import '../models/pedido.dart';
 import '../services/connectivity_service.dart';
+import '../services/device_scanner_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_widgets.dart';
+import 'barcode_scanner_screen.dart';
 
 class SeparacaoScreen extends StatefulWidget {
   const SeparacaoScreen({super.key, required this.pedido});
@@ -18,13 +20,21 @@ class SeparacaoScreen extends StatefulWidget {
 
 class _SeparacaoScreenState extends State<SeparacaoScreen> {
   final endereco = TextEditingController(), produto = TextEditingController();
+  final enderecoFocus = FocusNode(), produtoFocus = FocusNode();
   String? enderecoAberto;
   String? aviso;
   Map<String, int> separados = {};
+  bool _nativeScanner = false;
   @override
   void initState() {
     super.initState();
     _carregar();
+    _detectarScanner();
+  }
+
+  Future<void> _detectarScanner() async {
+    final nativeScanner = await DeviceScannerService.instance.hasNativeScanner;
+    if (mounted) setState(() => _nativeScanner = nativeScanner);
   }
 
   Future<void> _carregar() async {
@@ -39,6 +49,8 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
   void dispose() {
     endereco.dispose();
     produto.dispose();
+    enderecoFocus.dispose();
+    produtoFocus.dispose();
     super.dispose();
   }
 
@@ -50,8 +62,10 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
         aviso = null;
         endereco.clear();
       });
+      produtoFocus.requestFocus();
     } else {
       setState(() => aviso = 'Endereço não encontrado no pedido');
+      enderecoFocus.requestFocus();
     }
   }
 
@@ -83,6 +97,51 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
       aviso = null;
     });
     await PedidoStore.instance.salvarSeparacao(widget.pedido.id, novo);
+    produtoFocus.requestFocus();
+  }
+
+  Future<void> _lerEndereco() => _lerCodigo(
+    titulo: 'Ler endereço',
+    controller: endereco,
+    foco: enderecoFocus,
+    processar: abrirEndereco,
+  );
+
+  Future<void> _lerProduto() => _lerCodigo(
+    titulo: 'Ler código de barras',
+    controller: produto,
+    foco: produtoFocus,
+    processar: bipar,
+  );
+
+  Future<void> _lerCodigo({
+    required String titulo,
+    required TextEditingController controller,
+    required FocusNode foco,
+    required Future<void> Function() processar,
+  }) async {
+    foco.requestFocus();
+    if (_nativeScanner) {
+      final disparado = await DeviceScannerService.instance.triggerLaser();
+      if (!disparado && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Não foi possível disparar o laser. Use a tecla física do coletor.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    final codigo = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => BarcodeScannerScreen(title: titulo)),
+    );
+    if (codigo == null || !mounted) return;
+    controller.text = codigo;
+    await processar();
   }
 
   Future<void> reiniciar() async {
@@ -186,10 +245,22 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: endereco,
+                  focusNode: enderecoFocus,
                   onSubmitted: (_) => abrirEndereco(),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Bipar endereço (M-R-P-A)',
-                    prefixIcon: Icon(Icons.location_on_outlined),
+                    prefixIcon: const Icon(Icons.location_on_outlined),
+                    suffixIcon: IconButton(
+                      tooltip: _nativeScanner
+                          ? 'Disparar laser'
+                          : 'Ler pela câmera',
+                      icon: Icon(
+                        _nativeScanner
+                            ? Icons.document_scanner_outlined
+                            : Icons.camera_alt_outlined,
+                      ),
+                      onPressed: _lerEndereco,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -224,10 +295,22 @@ class _SeparacaoScreenState extends State<SeparacaoScreen> {
                 TextField(
                   enabled: enderecoAberto != null,
                   controller: produto,
+                  focusNode: produtoFocus,
                   onSubmitted: (_) => bipar(),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Bipar código de barras',
-                    prefixIcon: Icon(Icons.qr_code_scanner),
+                    prefixIcon: const Icon(Icons.qr_code_scanner),
+                    suffixIcon: IconButton(
+                      tooltip: _nativeScanner
+                          ? 'Disparar laser'
+                          : 'Ler pela câmera',
+                      icon: Icon(
+                        _nativeScanner
+                            ? Icons.document_scanner_outlined
+                            : Icons.camera_alt_outlined,
+                      ),
+                      onPressed: enderecoAberto == null ? null : _lerProduto,
+                    ),
                   ),
                 ),
                 if (aviso != null)

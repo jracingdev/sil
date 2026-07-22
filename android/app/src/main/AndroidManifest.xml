@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="S.I.L. — Sistema Integrado Logístico"
         android:name="${applicationName}"
