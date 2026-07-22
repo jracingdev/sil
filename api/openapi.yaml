@@ -1,0 +1,299 @@
+openapi: 3.0.3
+info:
+  title: S.I.L. API
+  description: |
+    API intermediária do coletor S.I.L.
+    O aplicativo Flutter consome estes endpoints autenticados.
+    O acesso ao Oracle/Winthor fica atrás de `IWinthorRepository`
+    (implementação a cargo de quem conecta o ERP).
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Desenvolvimento local
+
+tags:
+  - name: auth
+  - name: pedidos
+  - name: sistema
+
+paths:
+  /health:
+    get:
+      tags: [sistema]
+      summary: Health check
+      operationId: health
+      responses:
+        '200':
+          description: API no ar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Autentica operador separador
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Sessão criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Credenciais inválidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Usuário não é separador (ex. TIPOVENDA = C)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pedidos:
+    get:
+      tags: [pedidos]
+      summary: Lista pedidos pendentes de separação
+      description: Ordenados por prioridade de transportadora e data.
+      operationId: listarPedidos
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: codfilial
+          in: query
+          schema:
+            type: integer
+          description: Filial do operador (opcional; padrão da sessão)
+      responses:
+        '200':
+          description: Lista de pedidos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pedidos]
+                properties:
+                  pedidos:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Pedido'
+        '401':
+          description: Token ausente ou inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pedidos/{id}/reservar:
+    post:
+      tags: [pedidos]
+      summary: Reserva atômica do pedido e devolve payload completo
+      description: |
+        Equivalente a `PedidosRepository.iniciar` no app.
+        Após sucesso, o coletor grava o pedido no SQLite local.
+      operationId: reservarPedido
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservarRequest'
+      responses:
+        '200':
+          description: Pedido reservado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pedido'
+        '401':
+          description: Token ausente ou inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Pedido já reservado por outro operador
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Pedido não encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pedidos/{id}/finalizar:
+    post:
+      tags: [pedidos]
+      summary: Finaliza separação no ERP
+      description: |
+        Na implementação Winthor típica:
+        `UPDATE PCPEDC SET DTFINALSEP1 = SYSDATE WHERE NUMPED = :id`.
+      operationId: finalizarPedido
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Separação finalizada
+        '401':
+          description: Token ausente ou inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Pedido não encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, winthor]
+      properties:
+        status:
+          type: string
+          example: ok
+        winthor:
+          type: string
+          description: Provedor ativo (mock | oracle)
+          example: mock
+
+    LoginRequest:
+      type: object
+      required: [usuario, senha]
+      properties:
+        usuario:
+          type: string
+          example: RSGUIMARAES
+        senha:
+          type: string
+          example: '1234'
+
+    LoginResponse:
+      type: object
+      required: [token, operador]
+      properties:
+        token:
+          type: string
+        operador:
+          $ref: '#/components/schemas/Operador'
+
+    Operador:
+      type: object
+      required: [matricula, nome, nomeGuerra, codfilial, permissoes]
+      properties:
+        matricula:
+          type: string
+        nome:
+          type: string
+        nomeGuerra:
+          type: string
+        codfilial:
+          type: integer
+        permissoes:
+          type: array
+          items:
+            type: string
+
+    ReservarRequest:
+      type: object
+      required: [numComanda]
+      properties:
+        numComanda:
+          type: string
+          example: '12'
+
+    Pedido:
+      type: object
+      required: [id, data, codFornecFrete, cliente, itens]
+      properties:
+        id:
+          type: string
+        data:
+          type: string
+          format: date
+          example: '2026-02-13'
+        codFornecFrete:
+          type: integer
+        cliente:
+          type: string
+        numComanda:
+          type: string
+          nullable: true
+        itens:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemPedido'
+
+    ItemPedido:
+      type: object
+      required: [codauxiliar, codfab, desc, m, r, p, a, qtd]
+      properties:
+        codauxiliar:
+          type: string
+        codfab:
+          type: string
+        desc:
+          type: string
+        m:
+          type: string
+          description: Módulo do endereço
+        r:
+          type: string
+          description: Rua
+        p:
+          type: string
+          description: Prédio
+        a:
+          type: string
+          description: Apartamento / nível
+        qtd:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      required: [erro]
+      properties:
+        erro:
+          type: string
+        codigo:
+          type: string
+          description: Código estável para o app (opcional)
