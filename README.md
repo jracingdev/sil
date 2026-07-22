@@ -3,6 +3,9 @@
 MVP Flutter para coletor Android de separação de pedidos Winthor/RHM,
 mais API intermediária em Dart (`api/`).
 
+**Instalação no cliente:** ver o manual completo  
+[`MANUAL_INSTALACAO_CLIENTE.md`](MANUAL_INSTALACAO_CLIENTE.md).
+
 ## Arquitetura
 
 ```
