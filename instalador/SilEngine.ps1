@@ -68,6 +68,39 @@ function Sil-EnsureFlutter([string]$flutterBin) {
   }
 }
 
+# Flutter/Dart escrevem progresso em stderr ("Building flutter tool...").
+# Com $ErrorActionPreference=Stop isso vira excecao fatal no PowerShell.
+function Sil-InvokeNative {
+  param(
+    [Parameter(Mandatory)][string]$FilePath,
+    [string[]]$ArgumentList = @(),
+    [switch]$LogOutput
+  )
+  if (-not (Test-Path -LiteralPath $FilePath)) {
+    throw "Executavel nao encontrado: $FilePath"
+  }
+  $oldEa = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = & $FilePath @ArgumentList 2>&1
+    $code = $LASTEXITCODE
+    foreach ($line in @($output)) {
+      $text = if ($line -is [System.Management.Automation.ErrorRecord]) {
+        [string]$line.Exception.Message
+      } else {
+        [string]$line
+      }
+      if ([string]::IsNullOrWhiteSpace($text)) { continue }
+      if ($LogOutput) {
+        Sil-Log $text 'info'
+      }
+    }
+    return $code
+  } finally {
+    $ErrorActionPreference = $oldEa
+  }
+}
+
 function Sil-EnableTls12 {
   try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -278,6 +311,13 @@ function Sil-InstallFlutterSdk([string]$toolsRoot, [bool]$dryRun) {
     throw "Flutter extraiu, mas flutter.bat nao encontrado em $bin"
   }
   Sil-Log "Flutter instalado em $bin" 'ok'
+  # Primeira execucao compila o flutter_tool (pode demorar; progresso vai para stderr)
+  Sil-Log 'Preparando Flutter tool (primeira execucao)...' 'info'
+  $prepCode = Sil-InvokeNative -FilePath (Join-Path $bin 'flutter.bat') -ArgumentList @('--version') -LogOutput
+  if ($prepCode -ne 0) {
+    throw "Falha ao preparar Flutter tool (codigo $prepCode). Rode: `"$bin\flutter.bat`" --version"
+  }
+  Sil-Log 'Flutter tool pronto' 'ok'
   return $bin
 }
 
@@ -452,8 +492,12 @@ function Sil-EnsurePrerequisites {
 
   if (-not $DryRun) {
     Sil-ApplyToolEnv -flutterBin $Cfg.flutterBin -javaHome $javaHome -androidSdk $androidSdk
-    if ((Test-Path (Join-Path $Cfg.flutterBin 'flutter.bat')) -and $androidSdk) {
-      & (Join-Path $Cfg.flutterBin 'flutter.bat') config --android-sdk $androidSdk | Out-Null
+    $flutterBat = Join-Path $Cfg.flutterBin 'flutter.bat'
+    if ((Test-Path $flutterBat) -and $androidSdk) {
+      $cfgCode = Sil-InvokeNative -FilePath $flutterBat -ArgumentList @('config', "--android-sdk=$androidSdk")
+      if ($cfgCode -ne 0) {
+        Sil-Log "flutter config --android-sdk retornou codigo $cfgCode (seguindo)" 'warn'
+      }
     }
   }
 
@@ -558,8 +602,8 @@ function Sil-ApiDeps([string]$repoRoot, [hashtable]$tools, [bool]$dryRun) {
   if ($dryRun) { Sil-Log 'DryRun: dart pub get' 'warn'; return }
   Push-Location $api
   try {
-    & $tools.Dart pub get
-    if ($LASTEXITCODE -ne 0) { throw 'dart pub get falhou' }
+    $code = Sil-InvokeNative -FilePath $tools.Dart -ArgumentList @('pub', 'get') -LogOutput
+    if ($code -ne 0) { throw "dart pub get falhou (codigo $code)" }
     Sil-Log 'Dependencias da API instaladas' 'ok'
   } finally { Pop-Location }
 }
@@ -599,13 +643,15 @@ function Sil-BuildApk([hashtable]$cfg, [hashtable]$tools, [bool]$dryRun) {
   }
   Push-Location $work
   try {
-    & $tools.Flutter pub get
-    if ($cfg.apkRelease) {
-      & $tools.Flutter build apk --release --dart-define="SIL_API_BASE_URL=$baseUrl"
+    $pubCode = Sil-InvokeNative -FilePath $tools.Flutter -ArgumentList @('pub', 'get') -LogOutput
+    if ($pubCode -ne 0) { throw "flutter pub get falhou (codigo $pubCode)" }
+    $buildArgs = if ($cfg.apkRelease) {
+      @('build', 'apk', '--release', "--dart-define=SIL_API_BASE_URL=$baseUrl")
     } else {
-      & $tools.Flutter build apk --debug --dart-define="SIL_API_BASE_URL=$baseUrl"
+      @('build', 'apk', '--debug', "--dart-define=SIL_API_BASE_URL=$baseUrl")
     }
-    if ($LASTEXITCODE -ne 0) { throw 'flutter build apk falhou' }
+    $buildCode = Sil-InvokeNative -FilePath $tools.Flutter -ArgumentList $buildArgs -LogOutput
+    if ($buildCode -ne 0) { throw "flutter build apk falhou (codigo $buildCode)" }
     $apkName = if ($cfg.apkRelease) { 'app-release.apk' } else { 'app-debug.apk' }
     $apk = Join-Path $work "build\app\outputs\flutter-apk\$apkName"
     if (-not (Test-Path $apk)) { throw "APK nao encontrado: $apk" }
@@ -626,7 +672,14 @@ function Sil-InstallAdb([string]$apkPath, [bool]$dryRun) {
     return $false
   }
   $env:Path = "$(Split-Path $adbPath -Parent);" + $env:Path
-  $devices = & $adbPath devices | Select-String -Pattern "`tdevice$"
+  $oldEa = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $devicesOut = & $adbPath devices 2>&1
+  } finally {
+    $ErrorActionPreference = $oldEa
+  }
+  $devices = $devicesOut | Select-String -Pattern "`tdevice$"
   if (-not $devices) {
     Sil-Log 'Nenhum coletor conectado no ADB.' 'warn'
     return $false
@@ -634,9 +687,12 @@ function Sil-InstallAdb([string]$apkPath, [bool]$dryRun) {
   $serial = (($devices | Select-Object -First 1).ToString() -split "`t")[0].Trim()
   Sil-Log "Coletor ADB: $serial" 'ok'
   if ($dryRun) { Sil-Log "DryRun: adb install -r $apkPath" 'warn'; return $true }
-  & $adbPath -s $serial install -r $apkPath
-  if ($LASTEXITCODE -ne 0) { throw 'adb install falhou' }
-  & $adbPath -s $serial shell monkey -p br.com.rhm.rhm_coletor -c android.intent.category.LAUNCHER 1 | Out-Null
+  $instCode = Sil-InvokeNative -FilePath $adbPath -ArgumentList @('-s', $serial, 'install', '-r', $apkPath) -LogOutput
+  if ($instCode -ne 0) { throw "adb install falhou (codigo $instCode)" }
+  $null = Sil-InvokeNative -FilePath $adbPath -ArgumentList @(
+    '-s', $serial, 'shell', 'monkey', '-p', 'br.com.rhm.rhm_coletor',
+    '-c', 'android.intent.category.LAUNCHER', '1'
+  )
   Sil-Log 'APK instalado e app iniciado' 'ok'
   return $true
 }
