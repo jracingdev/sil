@@ -27,9 +27,18 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
   shelf: ^1.4.2
   sil_api:
     path: api
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/branding/app_icon.png
+  adaptive_icon_background: assets/branding/app_icon_background.png
+  adaptive_icon_foreground: assets/branding/app_icon_foreground.png
+  adaptive_icon_monochrome: assets/branding/app_icon_foreground.png
 
 flutter:
   uses-material-design: true
