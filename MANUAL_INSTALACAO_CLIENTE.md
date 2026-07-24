@@ -6,7 +6,8 @@ Coletor Android de separação de pedidos + API intermediária para o ERP Wintho
 Este documento descreve como instalar e colocar o sistema em operação no ambiente do cliente.
 
 > **Atalho:** para automatizar quase tudo com **tela visual** (checklist ao vivo), use  
-> [`instalador/Abrir-Instalador.bat`](instalador/Abrir-Instalador.bat)  
+> [`instalador/SIL-Instalador.exe`](instalador/SIL-Instalador.exe) (pede UAC)  
+> ou [`instalador/Abrir-Instalador.bat`](instalador/Abrir-Instalador.bat)  
 > (detalhes em [`instalador/README.md`](instalador/README.md)). Este manual continua válido como referência.
 
 ---

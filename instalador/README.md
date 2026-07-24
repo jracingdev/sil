@@ -3,23 +3,38 @@
 Automatiza API, firewall, script de subida, APK com IP correto e (opcional) ADB.
 Inclui **interface visual** para o cliente acompanhar cada procedimento.
 
-## Uso recomendado no cliente (tela visual)
+## Uso recomendado no cliente (executavel)
 
-1. Clique com o botao direito em `Abrir-Instalador.bat`
-2. **Executar como administrador** (para o firewall)
-3. Revise IP / nome do cliente na esquerda
-4. Clique em **Iniciar instalacao**
-5. Acompanhe a lista de procedimentos e o log a direita
+1. Clique duplo em **`SIL-Instalador.exe`** (pede UAC / administrador)
+2. Revise IP / nome do cliente na esquerda
+3. Clique em **Iniciar instalacao**
+4. Acompanhe a lista de procedimentos e o log a direita
+
+> O `.exe` precisa ficar **na pasta `instalador\`**, junto com `Abrir-Instalador.ps1` e `SilEngine.ps1`.
+
+Alternativa: clique direito em `Abrir-Instalador.bat` → **Executar como administrador**.
 
 ```text
 instalador\
-  Abrir-Instalador.bat     <-- clique duplo / Executar como Admin
+  SIL-Instalador.exe       <-- clique duplo (UAC admin)
+  Abrir-Instalador.bat     <-- atalho / fallback
   Abrir-Instalador.ps1     <-- interface WinForms
   Instalar-SIL.ps1         <-- modo texto / automacao CI
   SilEngine.ps1            <-- motor compartilhado
+  Build-Exe.ps1            <-- recompila o .exe
+  launcher\                <-- fonte C# do launcher
   cliente.exemplo.json
   saida\                   <-- APKs gerados
 ```
+
+### Recompilar o .exe
+
+```powershell
+cd instalador
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Exe.ps1
+```
+
+Requer apenas o compilador `csc.exe` do .NET Framework 4.x (ja incluso no Windows).
 
 ## O que a tela mostra
 
@@ -49,6 +64,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Instalar-SIL.ps1 -Config .\cliente-RHM.json -DryRun
 
 # Abrir UI direto
+.\SIL-Instalador.exe
 .\Abrir-Instalador.ps1
 .\Instalar-SIL.ps1 -Ui
 ```
@@ -87,8 +103,8 @@ Pastas padrao dos downloads:
 
 ## Se nao abrir / nao funcionar
 
-1. Clique direito em `Abrir-Instalador.bat` → **Executar como administrador**
-2. Se a janela nao abrir, veja `instalador_erro.txt` na mesma pasta
+1. Clique duplo em `SIL-Instalador.exe` e aceite o UAC  
+2. Se a janela nao abrir, veja `instalador_erro.txt` na mesma pasta  
 3. Teste o motor sem tela:
 
 ```powershell
